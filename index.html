@@ -7,6 +7,12 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
     <meta name="theme-color" content="#0b0f1a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Squad of One" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230b0f1a'/%3E%3Ccircle cx='16' cy='16' r='7' fill='none' stroke='%2364b5ff' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='2.5' fill='%23e8ecff'/%3E%3C/svg%3E"
@@ -37,15 +43,33 @@
         background: #0b0f1a;
         overflow: hidden;
         overscroll-behavior: none;
+        /* Block browser zoom / scroll / pull-to-refresh gestures during play. */
         touch-action: none;
+        -ms-touch-action: none;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-tap-highlight-color: transparent;
+        -webkit-touch-callout: none;
         font-family: 'Noto Sans', 'Noto Sans Devanagari', sans-serif;
       }
+      /* Respect device safe-area insets (notches / rounded corners / home bar).
+         The canvas is centred inside the padded box; Phaser's FIT scale then
+         letterboxes within the safe region. */
       #app {
+        position: fixed;
+        inset: 0;
         width: 100vw;
         height: 100vh;
         display: flex;
         align-items: center;
         justify-content: center;
+        padding: env(safe-area-inset-top) env(safe-area-inset-right)
+          env(safe-area-inset-bottom) env(safe-area-inset-left);
+        box-sizing: border-box;
+        touch-action: none;
+      }
+      #app canvas {
+        touch-action: none;
       }
     </style>
   </head>

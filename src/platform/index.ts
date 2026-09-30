@@ -6,3 +6,6 @@
 export * from './storage.js';
 export * from './haptics.js';
 export * from './share.js';
+export * from './pwa.js';
+export * from './gestures.js';
+export * from './playables.js';

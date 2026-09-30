@@ -66,6 +66,11 @@ export function createGame(parent: HTMLElement | string): Phaser.Game {
   // The FTE scene is first in the array and auto-starts; it self-routes to the
   // title menu immediately when seenIntro is already set.
   const game = new Phaser.Game(config);
-  installUiDevHook(game);
+  if (__DEV_TOOLS__) {
+    installUiDevHook(game);
+    // Expose the game for the throttled-CPU perf harness (scripts/perf.ts) to
+    // read the live FPS. Dev-only; stripped from the release build.
+    (window as unknown as { __SQUAD_GAME?: Phaser.Game }).__SQUAD_GAME = game;
+  }
   return game;
 }

@@ -13,8 +13,20 @@ import { decodeForThisBuild, playbackFrom, REPLAY_HASH_PREFIX } from './game/rep
 import { campaignLevelById } from './content/index.js';
 import { installShareDevHook } from './ui/share-dev-hook.js';
 import { installReplayDevHook } from './game/replay-dev-hook.js';
+import { installParityDevHook } from './game/parity-dev-hook.js';
+import {
+  registerServiceWorker,
+  blockZoomAndScroll,
+  playablesFirstFrameReady,
+  playablesGameReady,
+} from './platform/index.js';
 
 document.title = BRANDING.title;
+
+// Installable offline PWA + input hardening (brief 9.6). Both are no-ops on the
+// dev server / where unsupported, and neither makes a play-time network call.
+registerServiceWorker();
+blockZoomAndScroll();
 
 const root = document.getElementById('app');
 if (!root) {
@@ -31,8 +43,23 @@ if (params.get('fte') === '1' && getSave().seenIntro) {
 }
 
 const game = createGame(root);
-installShareDevHook(game);
-installReplayDevHook();
+
+// Dev/e2e-only automation hooks (brief 9.2). Gated on the compile-time define
+// `__DEV_TOOLS__` (a literal `false` in the release build) so Rollup dead-code-
+// eliminates the whole branch AND its imports - verified absent by
+// scripts/check-prod-bundle.ts.
+if (__DEV_TOOLS__) {
+  installShareDevHook(game);
+  installReplayDevHook();
+  installParityDevHook();
+}
+
+// YouTube Playables lifecycle (brief 9.7). No-ops unless the Playables build
+// flag is on AND we are inside the Playables host; never an external call.
+game.events.once('ready', () => {
+  playablesFirstFrameReady();
+  playablesGameReady();
+});
 
 // `/#r=<code>` deep link (brief 6.4): decode a shared replay and play it back
 // deterministically. A version/content mismatch shows the localized message in

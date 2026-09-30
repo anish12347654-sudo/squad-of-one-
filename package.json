@@ -13,6 +13,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e": "playwright test",
+    "build:release": "tsc --noEmit && VITE_RELEASE=1 vite build",
+    "build:playables": "tsc --noEmit && VITE_PLAYABLES=1 vite build",
+    "check:prod": "tsx scripts/check-prod-bundle.ts",
+    "perf": "tsx scripts/perf.ts",
     "gen:trig": "tsx scripts/gen-trig.ts",
     "gen:fonts": "python3 scripts/subset-fonts.py",
     "record:solutions": "tsx scripts/record-solutions.ts",
@@ -22,6 +26,9 @@
     "phaser": "4.2.1"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/core": "^8.5.2",
     "@playwright/test": "1.56.0",
     "@types/node": "22.18.9",
     "eslint": "9.37.0",

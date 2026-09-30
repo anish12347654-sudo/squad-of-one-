@@ -89,6 +89,9 @@ export class TimeChessScene extends Phaser.Scene {
 
   /** Dev/e2e hook: start + fast-forward a vs-AI match deterministically. */
   private installDevHook(): void {
+    // `__DEV_TOOLS__` is a compile-time literal; in the release build this whole
+    // body dead-code-eliminates so no `window.__SQUAD_TC` ships.
+    if (!__DEV_TOOLS__) return;
     if (typeof window === 'undefined') return;
     window.__SQUAD_TC = {
       setDifficulty: (d: TcDifficulty) => {

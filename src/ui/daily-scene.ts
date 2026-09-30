@@ -102,6 +102,8 @@ export class DailyScene extends Phaser.Scene {
    * wall-clock gameplay loop (avoids flakiness in headless CI).
    */
   private installDevHook(): void {
+    // Compile-time gated (see time-chess-scene): stripped from the release build.
+    if (!__DEV_TOOLS__) return;
     if (typeof window === 'undefined') return;
     window.__SQUAD_DAILY = {
       playToResult: () => this.playToResult(),

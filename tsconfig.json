@@ -36,5 +36,5 @@
       "@i18n/*": ["src/i18n/*"]
     }
   },
-  "include": ["src", "tests", "e2e", "scripts", "vite.config.ts"]
+  "include": ["src", "tests", "e2e", "scripts", "vite.config.ts", "capacitor.config.ts"]
 }

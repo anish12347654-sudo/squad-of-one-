@@ -8,3 +8,8 @@ e2e/output/
 .DS_Store
 .vite/
 .fonttmp/
+
+# Capacitor native project (scaffolded locally via `npx cap add android`).
+android/
+ios/
+.gradle/

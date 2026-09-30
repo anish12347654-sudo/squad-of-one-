@@ -17,3 +17,4 @@ export * from './daily.js';
 export * from './time-chess.js';
 export * from './time-chess-ai.js';
 export * from './time-chess-runner.js';
+export * from './parity.js';

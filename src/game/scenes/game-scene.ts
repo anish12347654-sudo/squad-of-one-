@@ -36,6 +36,7 @@ import type { LevelDef } from '@sim/index.js';
 import { createInputController, type InputController } from '../input.js';
 import { COLORS } from '../render/colors.js';
 import { installDevHook, type DevHookApi } from '../dev-hook.js';
+import { DebugOverlay } from '../debug-overlay.js';
 import { Vfx } from '../render/vfx.js';
 import { installFilters, type SceneFilters } from '../render/filters.js';
 import { buildPreSimRequest, runPreSimClient, type PreSimRun } from '../presim-client.js';
@@ -88,6 +89,16 @@ export class GameScene extends Phaser.Scene {
   private scaleWorld = 1;
 
   private devHook: DevHookApi | null = null;
+
+  // Dev-only debug overlay (tick / state hash / FPS / entity count). Only
+  // created under __DEV_TOOLS__; absent from the shipped release bundle.
+  private debug: DebugOverlay | null = null;
+
+  // Auto resolution scaling: when the measured FPS drops below 50 we lower the
+  // renderer resolution (and raise it back when we recover), per brief 9.6.
+  private fpsSamples: number[] = [];
+  private currentResScale = 1;
+  private resCooldown = 0;
 
   // Paradox presentation bookkeeping.
   private seenParadox = 0;
@@ -180,7 +191,17 @@ export class GameScene extends Phaser.Scene {
       this.audio.startMusic();
     });
 
-    this.devHook = installDevHook(this);
+    // Dev/e2e-only tools (tick-exact input hook + debug overlay). Gated on the
+    // compile-time define `__DEV_TOOLS__` so Rollup strips them (and their
+    // imports) from the release build.
+    if (__DEV_TOOLS__) {
+      this.devHook = installDevHook(this);
+      this.debug = new DebugOverlay(this);
+    }
+    // Live responsive layout: recompute the world transform on any resize
+    // (portrait/landscape flips, safe-area changes). Phaser FIT already scales
+    // the canvas; this keeps the arena centred within the new logical size.
+    this.scale.on(Phaser.Scale.Events.RESIZE, this.onResize, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.onShutdown, this);
     this.game.events.emit('game-ready');
   }
@@ -421,6 +442,10 @@ export class GameScene extends Phaser.Scene {
     this.vfx.update();
     this.filters.update(this.phase === 'rewind');
     this.updateAudioLayers();
+    this.updateAutoResolution(deltaMs);
+    if (__DEV_TOOLS__ && this.debug) {
+      this.debug.update(deltaMs, this.runner.state, this.game.loop.actualFps, this.currentResScale, this.phase);
+    }
   }
 
   private stepPlaying(dt: number): void {
@@ -1395,11 +1420,73 @@ export class GameScene extends Phaser.Scene {
     this.overlay.removeAll(true);
   }
 
+  /** Recompute the world transform + overlay positions on a live resize. */
+  private onResize(): void {
+    this.computeTransform();
+    if (this.banner) this.banner.setPosition(this.scale.width / 2, this.scale.height / 2 - 40);
+    this.debug?.reposition();
+  }
+
+  /**
+   * Auto resolution scaling (brief 9.6): sample FPS and, if it holds below 50,
+   * drop the renderer resolution to buy frame budget; recover it when FPS is
+   * comfortably back above 58. Purely a render concern - the fixed 60 Hz sim is
+   * untouched (it slows down, never skips).
+   */
+  private updateAutoResolution(deltaMs: number): void {
+    const fps = this.game.loop.actualFps;
+    if (!isFinite(fps) || fps <= 0) return;
+    this.fpsSamples.push(fps);
+    if (this.fpsSamples.length > 30) this.fpsSamples.shift();
+    if (this.resCooldown > 0) {
+      this.resCooldown -= deltaMs;
+      return;
+    }
+    if (this.fpsSamples.length < 20) return;
+    const avg = this.fpsSamples.reduce((a, b) => a + b, 0) / this.fpsSamples.length;
+    let next = this.currentResScale;
+    if (avg < 50 && this.currentResScale > 0.6) {
+      next = Math.max(0.6, this.currentResScale - 0.15);
+    } else if (avg > 58 && this.currentResScale < 1) {
+      next = Math.min(1, this.currentResScale + 0.15);
+    }
+    if (next !== this.currentResScale) {
+      this.currentResScale = next;
+      this.applyResolutionScale(next);
+      this.resCooldown = 1500;
+      this.fpsSamples.length = 0;
+    }
+  }
+
+  private applyResolutionScale(scale: number): void {
+    // Reduce the canvas backing-store resolution while CSS keeps the display
+    // size constant: the GPU rasterises fewer pixels (lower fill-rate cost)
+    // and the browser upscales. Logical/world coordinates are unchanged, so the
+    // sim and input mapping are untouched. Degrades safely if the canvas is
+    // absent (headless software renderer).
+    const canvas = this.game.canvas as HTMLCanvasElement | undefined;
+    if (!canvas) return;
+    try {
+      const cssW = canvas.clientWidth || canvas.width;
+      const cssH = canvas.clientHeight || canvas.height;
+      const dpr = window.devicePixelRatio || 1;
+      const targetW = Math.max(1, Math.round(cssW * dpr * scale));
+      const targetH = Math.max(1, Math.round(cssH * dpr * scale));
+      this.game.renderer.resize(targetW, targetH);
+      canvas.style.width = cssW + 'px';
+      canvas.style.height = cssH + 'px';
+    } catch {
+      /* renderer without dynamic resize - safe to ignore */
+    }
+  }
+
   private onShutdown(): void {
     this.game.events.off(Phaser.Core.Events.HIDDEN, this.onHidden, this);
     this.game.events.off(Phaser.Core.Events.VISIBLE, this.onVisible, this);
+    this.scale.off(Phaser.Scale.Events.RESIZE, this.onResize, this);
     this.controller?.destroy();
     this.devHook?.dispose();
+    this.debug?.destroy();
     this.vfx?.destroy();
     this.audio?.stopMusic();
   }

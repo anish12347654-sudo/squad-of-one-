@@ -237,3 +237,34 @@ deterministic inputs.
   into `InputFrame`s. The **dev hook** (`window.__SQUAD`, `src/game/dev-hook.ts`)
   feeds tick-exact `InputFrame`s through the same pipeline for e2e + solution
   replays and never affects live play.
+
+## M5 additions (ship quality)
+
+Nothing in the frozen sim changed; M5 is packaging, platform and tooling.
+
+- **Compile-time flags (`src/dev-flags.ts`).** `__DEV_TOOLS__` and
+  `__PLAYABLES__` are Vite `define` constants (see `vite.config.ts`). Guarding a
+  dev tool with `if (__DEV_TOOLS__)` lets Rollup dead-code-eliminate it (and its
+  imports) in the release build. `npm run build` keeps them ON (so the e2e suite
+  can drive the sim); `npm run build:release`/`build:playables` strip them.
+  `scripts/check-prod-bundle.ts` fails if any `window.__SQUAD*` hook or debug
+  overlay leaks into the shipped bundle.
+- **Offline PWA.** A Vite plugin (`offlineServiceWorker` in `vite.config.ts`)
+  emits `dist/sw.js` precaching every built asset; `src/platform/pwa.ts`
+  registers it. Cache-first, same-origin-only fallback -> zero play-time network
+  calls. `public/manifest.webmanifest` + generated `public/icons/*` make it
+  installable.
+- **Platform layer growth (`src/platform`).** `pwa.ts` (SW registration),
+  `gestures.ts` (block zoom/scroll during play), `playables.ts` (YouTube
+  Playables adapter: firstFrameReady/gameReady/save/load/sendScore, flag-gated,
+  zero external calls).
+- **Perf.** `GameScene` gains a dev-only `DebugOverlay` (tick/hash/FPS/entity
+  count) and always-on **auto resolution scaling** below 50 FPS (backing-store
+  resolution only; logical coords + sim untouched). `scripts/perf.ts` measures a
+  pure-sim `step()` benchmark plus 4x-CPU-throttled render FPS.
+- **Determinism gate 2.** `src/content/parity.ts` is one pure harness run in
+  both Node (`tests/determinism/parity-node.test.ts`, against a committed
+  fixture) and real Chromium (`e2e/parity.spec.ts`, via `window.__SQUAD_DET`),
+  asserting identical per-tick + final state hashes.
+- **Native shell.** `capacitor.config.ts` wraps the bundled `dist/` for Android
+  (offline; APK built externally with the Android SDK).
