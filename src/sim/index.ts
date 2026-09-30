@@ -18,6 +18,7 @@ export * from './spatial-hash.js';
 export * from './level.js';
 export * from './boss-pattern.js';
 export * from './level-runner.js';
+export * from './presim.js';
 export {
   createSimState,
   createLevelState,
@@ -25,9 +26,13 @@ export {
   step,
   stepMany,
   setEchoInputs,
+  setEchoRecordings,
   setBossPattern,
+  countAliveNonParadoxEchoes,
   angleWithin,
   ARENA_HALF,
   BOSS_RADIUS,
+  UNIT_RADIUS,
   PHASE1_THRESHOLD,
 } from './sim.js';
+export type { EchoRecordingMeta } from './sim.js';

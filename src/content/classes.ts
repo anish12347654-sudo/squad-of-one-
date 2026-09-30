@@ -11,7 +11,14 @@
 import type { ClassId } from '@sim/index.js';
 
 /** A simple silhouette hint the renderer turns into a distinct shape. */
-export type Silhouette = 'shield' | 'cross' | 'arrow';
+export type Silhouette =
+  | 'shield'
+  | 'cross'
+  | 'arrow'
+  | 'flame'
+  | 'dagger'
+  | 'gear'
+  | 'diamond';
 
 export interface ClassPresentation {
   id: ClassId;
@@ -54,7 +61,45 @@ export const CLASS_PRESENTATION: Record<ClassId, ClassPresentation> = {
     silhouette: 'arrow',
     sound: 'sfx/ranger-shot',
   },
+  pyromancer: {
+    id: 'pyromancer',
+    name: 'Pyromancer',
+    role: 'AoE DPS',
+    blurb: 'Lobs fire orbs and drops a screen-shaking Meteor.',
+    color: 0xff7043,
+    silhouette: 'flame',
+    sound: 'sfx/pyro-orb',
+  },
+  rogue: {
+    id: 'rogue',
+    name: 'Rogue',
+    role: 'Burst',
+    blurb: 'Twin slashes, double from behind; Shadow Step to safety.',
+    color: 0xba68c8,
+    silhouette: 'dagger',
+    sound: 'sfx/rogue-slash',
+  },
+  engineer: {
+    id: 'engineer',
+    name: 'Engineer',
+    role: 'Utility',
+    blurb: 'Rapid bolts and a deployable turret that holds ground.',
+    color: 0xffd54f,
+    silhouette: 'gear',
+    sound: 'sfx/engineer-bolt',
+  },
+  avatar: {
+    id: 'avatar',
+    name: 'Avatar',
+    role: 'Finisher',
+    blurb: 'All-rounder that grows with your squad. Ends it with Convergence.',
+    color: 0xffffff,
+    silhouette: 'diamond',
+    sound: 'sfx/avatar-blade',
+  },
 };
 
 /** Slot accent colours (index = slot) used when a slot has no class yet. */
-export const SLOT_COLORS: readonly number[] = [0x4fc3f7, 0x81c784, 0xffb74d, 0xe57373, 0xba68c8];
+export const SLOT_COLORS: readonly number[] = [
+  0x4fc3f7, 0x81c784, 0xffb74d, 0xff7043, 0xba68c8, 0xffd54f, 0xffffff,
+];

@@ -32,6 +32,30 @@ import {
   PIERCING_HALF_WIDTH,
   PIERCING_RANGE,
   PIERCING_SPEED,
+  FIRE_ORB_RADIUS,
+  METEOR_FUSE_TICKS,
+  METEOR_DAMAGE,
+  METEOR_RADIUS,
+  ROGUE_BACKSTAB_MUL,
+  SHADOW_STEP_DISTANCE,
+  SHADOW_STEP_TICKS,
+  SHADOW_STEP_INVULN_HITS,
+  TURRET_LIFE_TICKS,
+  TURRET_HP,
+  TURRET_DAMAGE,
+  TURRET_FIRE_CD,
+  TURRET_RANGE,
+  TURRET_PROJECTILE_SPEED,
+  CONVERGENCE_CHARGE,
+  CONVERGE_PER_ECHO,
+  CONVERGENCE_FIRE_TICKS,
+  CONVERGENCE_BEAM_DPS,
+  AVATAR_DAMAGE_PER_ECHO,
+  PARADOX_ANCHOR_TOLERANCE,
+  PARADOX_DIVERGE_DIST,
+  PARADOX_DIVERGE_TICKS,
+  PARADOX_TELEGRAPH_TICKS,
+  PARADOX_AGGRO_RANGE,
 } from './classes.js';
 import {
   addDamageThreat,
@@ -47,7 +71,7 @@ import {
   queryCircle,
 } from './spatial-hash.js';
 import { dist, distToLine, projectOnDir, clamp } from './vec.js';
-import { BUTTON_SKILL, BUTTON_DASH, emptyInput } from './types.js';
+import { BUTTON_SKILL, BUTTON_DASH, BUTTON_INTERACT, emptyInput } from './types.js';
 import type {
   InputFrame,
   SimState,
@@ -55,6 +79,9 @@ import type {
   Unit,
   Projectile,
   BossAttack,
+  Turret,
+  Interactable,
+  ParadoxCause,
   ClassId,
 } from './types.js';
 import type { LevelDef } from './level.js';
@@ -87,9 +114,18 @@ function makeUnit(id: number, kind: Unit['kind'], team: Unit['team'], slot: numb
     dashTicks: 0,
     dashX: 0,
     dashY: 0,
+    dashSpeed: 0,
     tauntTicks: 0,
     sanctuaryTicks: 0,
     chargeTicks: 0,
+    paradox: false,
+    paradoxTelegraph: 0,
+    divergedTicks: 0,
+    invulnTicks: 0,
+    invulnHits: 0,
+    convergeCharge: 0,
+    convergeFireTicks: 0,
+    allyBuffCount: 0,
   };
 }
 
@@ -132,7 +168,27 @@ export function createLevelState(
     nextId: 1,
     outcome: 'running',
     playerId: -1,
+    turrets: [],
+    interactables: [],
+    paradoxEvents: [],
   };
+
+  // Interactables (Time Shards / levers) are placed by the level, if any.
+  if (level.interactables) {
+    level.interactables.forEach((it, idx) => {
+      state.interactables.push({
+        id: state.nextId++,
+        defIndex: idx,
+        kind: it.kind,
+        x: it.x,
+        y: it.y,
+        radius: it.radius,
+        taken: false,
+        takenBySlot: -1,
+        takenAtTick: -1,
+      });
+    });
+  }
 
   // Spawn the boss first (id 0-ish via allocator) so it has the lowest enemy id.
   const boss = makeUnit(state.nextId++, 'boss', 'enemy', -1);
@@ -199,6 +255,9 @@ export function createSimState(seed: number): SimState {
     nextId: 1,
     outcome: 'running',
     playerId: -1,
+    turrets: [],
+    interactables: [],
+    paradoxEvents: [],
   };
   const boss = makeUnit(state.nextId++, 'boss', 'enemy', -1);
   boss.x = 0;
@@ -268,6 +327,9 @@ export function cloneSimState(state: SimState): SimState {
     nextId: state.nextId,
     outcome: state.outcome,
     playerId: state.playerId,
+    turrets: state.turrets.map((t) => ({ ...t })),
+    interactables: state.interactables.map((i) => ({ ...i })),
+    paradoxEvents: state.paradoxEvents.map((e) => ({ ...e })),
   };
 }
 
@@ -298,6 +360,30 @@ export function setEchoInputs(bySlot: Map<number, InputFrame>): void {
   echoInputs = bySlot;
 }
 
+/**
+ * Per-slot recording metadata used ONLY for paradox detection (contract 3.4).
+ * It is the recorded reality an echo is trying to reproduce: its position per
+ * tick and its anchors (recorded pickups/interactions). Like echoInputs this is
+ * transient scratch, fully derived from the deterministic recordings; it is not
+ * hashed. The paradox verdicts it produces (unit.paradox, divergedTicks) ARE
+ * hashed state, so determinism is preserved.
+ */
+export interface EchoRecordingMeta {
+  /** positions[2t]=x, positions[2t+1]=y (the recorded path). */
+  positions: Float64Array | number[];
+  /** Recorded anchors: {objectId, tick}. objectId is a stable interactable id. */
+  anchors: { objectId: number; tick: number }[];
+  /** Length in ticks of the recording. */
+  length: number;
+}
+
+let echoRecordings: Map<number, EchoRecordingMeta> = new Map();
+
+/** Provide per-slot recording metadata for paradox detection this loop. */
+export function setEchoRecordings(bySlot: Map<number, EchoRecordingMeta>): void {
+  echoRecordings = bySlot;
+}
+
 function inputForUnit(unit: Unit, liveInput: InputFrame): InputFrame {
   if (unit.kind === 'player') return liveInput;
   return echoInputs.get(unit.slot) ?? emptyInput();
@@ -326,27 +412,49 @@ export const step: StepFn = (state, liveInput) => {
     if (u.team === 'player' && u.alive) insert(hash, u.id, u.x, u.y);
   }
 
-  // 1) Player-team units act (movement + abilities) in stable id order.
+  // 0) Paradox detection + Avatar passive bookkeeping run first so this tick's
+  // behaviour (hostile targeting, damage scaling) reflects the current verdict.
+  const aliveEchoes = countAliveNonParadoxEchoes(state);
   for (const u of state.units) {
-    if (u.team !== 'player' || !u.alive) continue;
-    const input = inputForUnit(u, liveInput);
-    updatePlayerUnit(state, u, input, bossUnit, hash);
+    if (u.classId === 'avatar') u.allyBuffCount = aliveEchoes;
   }
 
-  // 2) Projectiles advance and resolve hits.
+  // 1) Player-team units AND paradox echoes act (movement + abilities) in
+  // stable id order. A paradox echo has team 'enemy' but is still processed
+  // here so its telegraph counts down and it acts on its hostile kit.
+  for (const u of state.units) {
+    if (u.kind === 'boss' || u.kind === 'projectile' || !u.alive) continue;
+    if (u.team !== 'player' && !u.paradox) continue;
+    // Detect paradox before acting (needs pre-move position vs recording).
+    detectParadox(state, u);
+    countdownParadoxTelegraph(u);
+    const input = inputForUnit(u, liveInput);
+    if (u.paradox && u.paradoxTelegraph <= 0) {
+      updateParadoxUnit(state, u, bossUnit, hash);
+    } else if (u.team === 'player') {
+      updatePlayerUnit(state, u, input, bossUnit, hash);
+    }
+    // A paradox echo mid-telegraph does nothing (frozen in its glitch).
+  }
+
+  // 2) Turrets act.
+  updateTurrets(state, bossUnit);
+
+  // 3) Projectiles advance and resolve hits (now team-aware for paradox).
   updateProjectiles(state, bossUnit);
 
-  // 3) Boss brain: targeting + pattern script + resolve landed attacks.
+  // 4) Boss brain: targeting + pattern script + resolve landed attacks.
   if (bossUnit && bossUnit.alive) {
     updateBoss(state, bossUnit);
   }
   updateAttacks(state);
 
-  // 4) Cull dead projectiles/attacks.
+  // 5) Cull dead projectiles/attacks/turrets.
   state.projectiles = state.projectiles.filter((p) => p.life > 0);
   state.attacks = state.attacks.filter((a) => a.telegraphTicks > 0 || a.activeTicks > 0);
+  state.turrets = state.turrets.filter((t) => t.life > 0 && t.hp > 0);
 
-  // 5) Win / lose evaluation.
+  // 6) Win / lose evaluation.
   if (bossUnit && !bossUnit.alive) {
     state.outcome = 'won';
   } else if (state.tick + 1 >= state.loopLength) {
@@ -357,8 +465,104 @@ export const step: StepFn = (state, liveInput) => {
   return state;
 };
 
+/** Count alive echoes that are not paradox (used for Avatar passive + stars). */
+export function countAliveNonParadoxEchoes(state: SimState): number {
+  let n = 0;
+  for (const u of state.units) {
+    if (u.kind === 'echo' && u.alive && !u.paradox) n += 1;
+  }
+  return n;
+}
+
 function findBoss(state: SimState): Unit | undefined {
   for (const u of state.units) if (u.kind === 'boss') return u;
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Paradox detection (contract 3.4) - pure, deterministic
+// ---------------------------------------------------------------------------
+
+/**
+ * Decide whether an echo has become a Paradox this tick. Only echoes with a
+ * recording (echoRecordings) can paradox; the live player and the boss never
+ * do. Two triggers (contract 3.4):
+ *   - path diverged: |pos - recorded pos| > 12u for 20 consecutive ticks.
+ *   - anchor broken: a recorded pickup/interaction cannot happen within +/-5
+ *     ticks of its recorded tick (the interactable is already taken by another
+ *     slot in this rewritten world).
+ * A dead echo cannot paradox (death is not a paradox). Once paradox, it stays.
+ */
+function detectParadox(state: SimState, u: Unit): void {
+  if (u.kind !== 'echo' || !u.alive || u.paradox) return;
+  const rec = echoRecordings.get(u.slot);
+  if (!rec) return;
+  const t = state.tick;
+
+  // --- Path divergence ---
+  if (t < rec.length && t * 2 + 1 < rec.positions.length) {
+    const rx = rec.positions[t * 2] as number;
+    const ry = rec.positions[t * 2 + 1] as number;
+    const d = dist(u.x, u.y, rx, ry);
+    if (d > PARADOX_DIVERGE_DIST) {
+      u.divergedTicks += 1;
+      if (u.divergedTicks >= PARADOX_DIVERGE_TICKS) {
+        triggerParadox(state, u, 'path-diverged', `Slot ${u.slot + 1} drifted off its path`);
+        return;
+      }
+    } else {
+      u.divergedTicks = 0;
+    }
+  }
+
+  // --- Anchor broken ---
+  for (const a of rec.anchors) {
+    // Only evaluate the anchor around its recorded tick window.
+    if (t < a.tick - PARADOX_ANCHOR_TOLERANCE || t > a.tick + PARADOX_ANCHOR_TOLERANCE) continue;
+    const obj = interactableByDefIndex(state, a.objectId);
+    if (!obj) continue;
+    // The recorded reality: this echo took/flipped obj at ~a.tick. If, in the
+    // rewritten world, obj is already taken by a DIFFERENT slot, that recorded
+    // interaction can no longer happen -> paradox at the tolerance boundary.
+    if (obj.taken && obj.takenBySlot !== u.slot) {
+      // Only fire once we are past the earliest tolerated moment it could have
+      // still happened (i.e. the window has effectively closed for this tick).
+      const cause = obj.kind === 'shard' ? 'Shard' : 'Lever';
+      triggerParadox(
+        state,
+        u,
+        'anchor-broken',
+        `${cause} taken by Slot ${obj.takenBySlot + 1}`,
+      );
+      return;
+    }
+  }
+}
+
+function triggerParadox(state: SimState, u: Unit, cause: ParadoxCause, detail: string): void {
+  u.paradox = true;
+  u.paradoxTelegraph = PARADOX_TELEGRAPH_TICKS;
+  // Paradox echoes leave the player team: they are enemies of everyone.
+  u.team = 'enemy';
+  // Drop any boss threat entry the echo held (it is no longer an ally).
+  state.boss.threat = state.boss.threat.filter((e) => e.targetId !== u.id);
+  if (state.boss.targetId === u.id) state.boss.targetId = -1;
+  state.paradoxEvents.push({
+    tick: state.tick,
+    slot: u.slot,
+    cause,
+    detail,
+    x: u.x,
+    y: u.y,
+  });
+}
+
+function countdownParadoxTelegraph(u: Unit): void {
+  if (u.paradox && u.paradoxTelegraph > 0) u.paradoxTelegraph -= 1;
+}
+
+function interactableByDefIndex(state: SimState, defIndex: number): Interactable | undefined {
+  for (const it of state.interactables) if (it.defIndex === defIndex) return it;
   return undefined;
 }
 
@@ -383,7 +587,7 @@ function updatePlayerUnit(
 
   // --- Movement (dash overrides directional input) ---
   if (u.dashTicks > 0) {
-    const stepDist = stats.dashDistance / stats.dashTicks;
+    const stepDist = u.dashSpeed > 0 ? u.dashSpeed : stats.dashDistance / stats.dashTicks;
     u.x += u.dashX * stepDist;
     u.y += u.dashY * stepDist;
     u.dashTicks -= 1;
@@ -418,8 +622,27 @@ function updatePlayerUnit(
     }
     u.dashX = dx;
     u.dashY = dy;
+    u.dashSpeed = 0;
     u.dashTicks = stats.dashTicks;
     u.dashCd = stats.dashCd;
+  }
+
+  // --- Interact button (pick up shards / flip levers) ---
+  if ((input.buttons & BUTTON_INTERACT) !== 0) {
+    tryInteract(state, u);
+  }
+
+  // Invulnerability timers (Rogue Shadow Step grace) tick down.
+  if (u.invulnTicks > 0) u.invulnTicks -= 1;
+
+  // Avatar Convergence charge builds every tick, faster per alive echo.
+  if (stats.id === 'avatar') {
+    if (u.convergeFireTicks > 0) {
+      u.convergeFireTicks -= 1;
+      fireConvergenceBeams(state, u, boss);
+    } else if (u.convergeCharge < CONVERGENCE_CHARGE) {
+      u.convergeCharge += 1 + CONVERGE_PER_ECHO * u.allyBuffCount;
+    }
   }
 
   // --- Skill button ---
@@ -436,6 +659,18 @@ function updatePlayerUnit(
   // --- Automatic primary attack ---
   if (u.primaryCd <= 0 && u.chargeTicks <= 0) {
     doPrimary(state, u, stats.id, boss, hash);
+  }
+}
+
+/** Pick up a shard / flip a lever within reach, recording it as an anchor-able. */
+function tryInteract(state: SimState, u: Unit): void {
+  for (const it of state.interactables) {
+    if (it.taken && it.kind === 'shard') continue;
+    if (dist(u.x, u.y, it.x, it.y) <= it.radius) {
+      it.taken = it.kind === 'lever' ? !it.taken : true;
+      it.takenBySlot = u.slot;
+      it.takenAtTick = state.tick;
+    }
   }
 }
 
@@ -464,7 +699,6 @@ function doPrimary(
   const stats = classStats(cls);
   if (cls === 'guardian') {
     if (!boss || !boss.alive) return;
-    // Melee arc: hit the boss if within range and inside the facing arc.
     const d = dist(u.x, u.y, boss.x, boss.y);
     if (d <= stats.meleeRange + BOSS_RADIUS) {
       const toBoss = atan2Brads(boss.y - u.y, boss.x - u.x);
@@ -474,7 +708,6 @@ function doPrimary(
       }
     }
   } else if (cls === 'medic') {
-    // Heal beam onto the lowest-HP% ally within range and below full HP.
     const target = lowestHpAlly(state, u, stats.healRange, hash);
     if (target) {
       const before = target.hp;
@@ -482,7 +715,6 @@ function doPrimary(
       const healed = target.hp - before;
       if (healed > 0 && boss) addHealThreat(state.boss, u.id, healed);
       u.primaryCd = stats.primaryCd;
-      // Face the heal target for readable rendering.
       u.facing = atan2Brads(target.y - u.y, target.x - u.x);
     }
   } else if (cls === 'ranger') {
@@ -491,10 +723,75 @@ function doPrimary(
     if (d <= stats.projectileRange) {
       const ang = atan2Brads(boss.y - u.y, boss.x - u.x);
       u.facing = ang;
-      spawnArrow(state, u, ang, stats.projectileSpeed, stats.primaryDamage, stats.projectileRange);
+      spawnArrow(state, u, ang, stats.projectileSpeed, stats.primaryDamage, stats.projectileRange, 'arrow');
       u.primaryCd = stats.primaryCd;
     }
+  } else if (cls === 'pyromancer') {
+    if (!boss || !boss.alive) return;
+    const d = dist(u.x, u.y, boss.x, boss.y);
+    if (d <= stats.projectileRange) {
+      const ang = atan2Brads(boss.y - u.y, boss.x - u.x);
+      u.facing = ang;
+      const p = spawnArrow(state, u, ang, stats.projectileSpeed, stats.primaryDamage, stats.projectileRange, 'orb');
+      p.aoeRadius = FIRE_ORB_RADIUS;
+      u.primaryCd = stats.primaryCd;
+    }
+  } else if (cls === 'engineer') {
+    if (!boss || !boss.alive) return;
+    const d = dist(u.x, u.y, boss.x, boss.y);
+    if (d <= stats.projectileRange) {
+      const ang = atan2Brads(boss.y - u.y, boss.x - u.x);
+      u.facing = ang;
+      spawnArrow(state, u, ang, stats.projectileSpeed, stats.primaryDamage, stats.projectileRange, 'bolt');
+      u.primaryCd = stats.primaryCd;
+    }
+  } else if (cls === 'rogue') {
+    if (!boss || !boss.alive) return;
+    const d = dist(u.x, u.y, boss.x, boss.y);
+    if (d <= stats.meleeRange + BOSS_RADIUS) {
+      const toBoss = atan2Brads(boss.y - u.y, boss.x - u.x);
+      if (angleWithin(u.facing, toBoss, stats.meleeHalfArc)) {
+        // Twin slash = two hits; from behind the boss deals x2.
+        let per = stats.primaryDamage;
+        if (isBehind(u, boss)) per *= ROGUE_BACKSTAB_MUL;
+        dealDamageToBoss(state, boss, u, per);
+        dealDamageToBoss(state, boss, u, per);
+        u.primaryCd = stats.primaryCd;
+      }
+    }
+  } else if (cls === 'avatar') {
+    if (!boss || !boss.alive) return;
+    const mul = avatarDamageMul(u);
+    const d = dist(u.x, u.y, boss.x, boss.y);
+    // Melee chrono blade.
+    let hit = false;
+    if (d <= stats.meleeRange + BOSS_RADIUS) {
+      const toBoss = atan2Brads(boss.y - u.y, boss.x - u.x);
+      if (angleWithin(u.facing, toBoss, stats.meleeHalfArc)) {
+        dealDamageToBoss(state, boss, u, stats.primaryDamage * mul);
+        hit = true;
+      }
+    }
+    // Short wave (also on cooldown even if the melee missed, if boss in range).
+    if (d <= stats.projectileRange + BOSS_RADIUS + 40) {
+      const ang = atan2Brads(boss.y - u.y, boss.x - u.x);
+      u.facing = ang;
+      spawnArrow(state, u, ang, stats.projectileSpeed, stats.primaryDamage * mul, stats.projectileRange, 'wave');
+      hit = true;
+    }
+    if (hit) u.primaryCd = stats.primaryCd;
   }
+}
+
+/** Avatar passive: damage x (1 + 0.2 x alive non-paradox echoes). */
+function avatarDamageMul(u: Unit): number {
+  return 1 + AVATAR_DAMAGE_PER_ECHO * u.allyBuffCount;
+}
+
+/** True when `u` is behind `target` relative to the target's facing. */
+function isBehind(u: Unit, target: Unit): boolean {
+  const toU = atan2Brads(u.y - target.y, u.x - target.x);
+  return !angleWithin(target.facing, toU, 1024); // outside +/-90deg front cone
 }
 
 function activateSkill(state: SimState, u: Unit, cls: ClassId, boss: Unit | undefined): void {
@@ -504,7 +801,6 @@ function activateSkill(state: SimState, u: Unit, cls: ClassId, boss: Unit | unde
     applyTaunt(state.boss, u.id, TAUNT_TICKS);
     u.skillCd = stats.skillCd;
   } else if (cls === 'medic') {
-    // Sanctuary: grant the damage-reduction buff to allies in the zone.
     for (const ally of state.units) {
       if (ally.team === 'player' && ally.alive) {
         if (dist(u.x, u.y, ally.x, ally.y) <= SANCTUARY_RADIUS) {
@@ -514,10 +810,83 @@ function activateSkill(state: SimState, u: Unit, cls: ClassId, boss: Unit | unde
     }
     u.skillCd = stats.skillCd;
   } else if (cls === 'ranger') {
-    // Begin charging the Piercing Shot.
     u.chargeTicks = PIERCING_CHARGE_TICKS;
     u.skillCd = stats.skillCd;
+  } else if (cls === 'pyromancer') {
+    // Meteor: land a delayed AoE strike where the boss is (or facing point).
+    let tx = u.x + (cosFx(u.facing) / TRIG_ONE) * 240;
+    let ty = u.y + (sinFx(u.facing) / TRIG_ONE) * 240;
+    if (boss && boss.alive) {
+      tx = boss.x;
+      ty = boss.y;
+    }
+    spawnMeteor(state, u, tx, ty);
+    u.skillCd = stats.skillCd;
+  } else if (cls === 'rogue') {
+    // Shadow Step: fast dash + short invulnerability grace and hit charges.
+    const dx = cosFx(u.facing) / TRIG_ONE;
+    const dy = sinFx(u.facing) / TRIG_ONE;
+    u.dashX = dx;
+    u.dashY = dy;
+    u.dashTicks = SHADOW_STEP_TICKS;
+    u.dashSpeed = SHADOW_STEP_DISTANCE / SHADOW_STEP_TICKS;
+    u.invulnTicks = SHADOW_STEP_TICKS + 2;
+    u.invulnHits = SHADOW_STEP_INVULN_HITS;
+    u.skillCd = stats.skillCd;
+  } else if (cls === 'engineer') {
+    deployTurret(state, u);
+    u.skillCd = stats.skillCd;
+  } else if (cls === 'avatar') {
+    // Convergence: fire only when fully charged.
+    if (u.convergeCharge >= CONVERGENCE_CHARGE && u.convergeFireTicks <= 0) {
+      u.convergeFireTicks = CONVERGENCE_FIRE_TICKS;
+      u.convergeCharge = 0;
+    }
   }
+}
+
+/** Deploy an Engineer turret slightly in front of the unit. */
+function deployTurret(state: SimState, u: Unit): void {
+  const fx = cosFx(u.facing) / TRIG_ONE;
+  const fy = sinFx(u.facing) / TRIG_ONE;
+  const t: Turret = {
+    id: state.nextId++,
+    ownerId: u.id,
+    ownerSlot: u.slot,
+    team: u.team,
+    x: clamp(u.x + fx * 40, -ARENA_HALF, ARENA_HALF),
+    y: clamp(u.y + fy * 40, -ARENA_HALF, ARENA_HALF),
+    hp: TURRET_HP,
+    maxHp: TURRET_HP,
+    life: TURRET_LIFE_TICKS,
+    fireCd: TURRET_FIRE_CD,
+    hostileToAll: u.paradox,
+    facing: u.facing,
+  };
+  state.turrets.push(t);
+}
+
+/** Spawn the Pyromancer Meteor: a fused ground strike telegraph. */
+function spawnMeteor(state: SimState, u: Unit, tx: number, ty: number): void {
+  const p: Projectile = {
+    id: state.nextId++,
+    team: u.team,
+    ownerId: u.id,
+    ownerSlot: u.slot,
+    x: tx,
+    y: ty,
+    vx: 0,
+    vy: 0,
+    damage: METEOR_DAMAGE,
+    life: METEOR_FUSE_TICKS + 1,
+    piercing: false,
+    hits: [],
+    aoeRadius: METEOR_RADIUS,
+    fuseTicks: METEOR_FUSE_TICKS,
+    hitsEveryone: u.paradox,
+    visual: 'meteor',
+  };
+  state.projectiles.push(p);
 }
 
 function firePiercingShot(state: SimState, u: Unit): void {
@@ -528,7 +897,7 @@ function firePiercingShot(state: SimState, u: Unit): void {
   const dy = sinFx(ang) / TRIG_ONE;
   const p: Projectile = {
     id: state.nextId++,
-    team: 'player',
+    team: u.team,
     ownerId: u.id,
     ownerSlot: u.slot,
     x: u.x,
@@ -539,6 +908,8 @@ function firePiercingShot(state: SimState, u: Unit): void {
     life: Math.ceil(PIERCING_RANGE / perTick(PIERCING_SPEED)),
     piercing: true,
     hits: [],
+    hitsEveryone: u.paradox,
+    visual: 'beam',
   };
   state.projectiles.push(p);
 }
@@ -550,13 +921,14 @@ function spawnArrow(
   speed: number,
   damage: number,
   range: number,
-): void {
+  visual: Projectile['visual'] = 'arrow',
+): Projectile {
   const dx = cosFx(angle) / TRIG_ONE;
   const dy = sinFx(angle) / TRIG_ONE;
   const v = perTick(speed);
   const p: Projectile = {
     id: state.nextId++,
-    team: 'player',
+    team: u.team,
     ownerId: u.id,
     ownerSlot: u.slot,
     x: u.x,
@@ -567,31 +939,310 @@ function spawnArrow(
     life: Math.ceil(range / v),
     piercing: false,
     hits: [],
+    hitsEveryone: u.paradox,
+    visual,
   };
   state.projectiles.push(p);
+  return p;
 }
 
-function updateProjectiles(state: SimState, boss: Unit | undefined): void {
+/**
+ * True when projectile `p` may damage unit `t`. Player projectiles hit enemies
+ * (boss + paradox echoes); enemy projectiles hit player-team; a paradox owner's
+ * projectile (hitsEveryone) hits every living unit except its own owner.
+ */
+function projectileCanHit(p: Projectile, t: Unit): boolean {
+  if (!t.alive) return false;
+  if (t.id === p.ownerId) return false;
+  if (p.hitsEveryone) return true;
+  return t.team !== p.team;
+}
+
+function radiusFor(t: Unit): number {
+  return t.kind === 'boss' ? BOSS_RADIUS : UNIT_RADIUS;
+}
+
+/** Deal projectile damage to a unit, routing to the boss/threat path if needed. */
+function dealProjectileDamage(state: SimState, t: Unit, owner: Unit | undefined, dmg: number): void {
+  if (t.kind === 'boss') {
+    if (owner) dealDamageToBoss(state, t, owner, dmg);
+  } else {
+    dealDamageToUnit(t, dmg);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Paradox hostile behaviour (contract 3.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * A hostile paradox echo: it keeps its HP and class kit but turns on everyone.
+ * It hunts the nearest non-paradox unit within PARADOX_AGGRO_RANGE (boss,
+ * enemies, other echoes, or the live player) and uses its kit against it, with
+ * support abilities INVERTED (heal->drain, Sanctuary->damage zone, turrets
+ * shoot anyone). Enemy of everyone, including the boss.
+ */
+function updateParadoxUnit(
+  state: SimState,
+  u: Unit,
+  boss: Unit | undefined,
+  _hash: ReturnType<typeof createSpatialHash>,
+): void {
+  const stats = classStats(u.classId as ClassId);
+  if (u.primaryCd > 0) u.primaryCd -= 1;
+  if (u.skillCd > 0) u.skillCd -= 1;
+  if (u.dashCd > 0) u.dashCd -= 1;
+  if (u.invulnTicks > 0) u.invulnTicks -= 1;
+
+  const target = nearestNonParadox(state, u, PARADOX_AGGRO_RANGE);
+  if (target) {
+    const tr = target.kind === 'boss' ? BOSS_RADIUS : UNIT_RADIUS;
+    const d = dist(u.x, u.y, target.x, target.y);
+    u.facing = atan2Brads(target.y - u.y, target.x - u.x);
+    // Move to attack range (melee classes close; ranged keep some distance).
+    const wantMelee = stats.meleeRange > 0 && stats.projectileRange <= 0;
+    const desired = wantMelee ? stats.meleeRange + tr - 6 : Math.min(stats.projectileRange * 0.7, 260);
+    if (d > desired) {
+      const spd = perTick(stats.speed);
+      u.x += ((target.x - u.x) / d) * spd;
+      u.y += ((target.y - u.y) / d) * spd;
+      clampToArena(u);
+    }
+    // Attack with the (possibly inverted) kit.
+    if (u.primaryCd <= 0) doParadoxPrimary(state, u, stats.id, target);
+    if (u.skillCd <= 0) doParadoxSkill(state, u, stats.id, target);
+  }
+  // Ranger charge still resolves if it was mid-charge when it flipped.
+  if (u.chargeTicks > 0) {
+    u.chargeTicks -= 1;
+    if (u.chargeTicks === 0) firePiercingShot(state, u);
+  }
+  // Boss ref unused directly (target may be the boss). Silence linter.
+  void boss;
+}
+
+/** Nearest living non-paradox unit within `range` (any team, incl. boss). */
+function nearestNonParadox(state: SimState, from: Unit, range: number): Unit | undefined {
+  let best: Unit | undefined;
+  let bestD = range;
+  let bestId = Number.POSITIVE_INFINITY;
+  for (const t of state.units) {
+    if (!t.alive || t.id === from.id) continue;
+    if (t.paradox) continue; // paradox units ignore each other
+    const d = dist(from.x, from.y, t.x, t.y);
+    if (d < bestD - 1e-9 || (Math.abs(d - bestD) <= 1e-9 && t.id < bestId)) {
+      bestD = d;
+      best = t;
+      bestId = t.id;
+    }
+  }
+  return best;
+}
+
+/** Paradox primary: same shapes as the live kit but aimed at `target`. */
+function doParadoxPrimary(state: SimState, u: Unit, cls: ClassId, target: Unit): void {
+  const stats = classStats(cls);
+  const tr = target.kind === 'boss' ? BOSS_RADIUS : UNIT_RADIUS;
+  const d = dist(u.x, u.y, target.x, target.y);
+  const ang = atan2Brads(target.y - u.y, target.x - u.x);
+  if (cls === 'medic') {
+    // Support inversion: the heal beam becomes a drain.
+    if (d <= stats.healRange) {
+      applyAnyDamage(state, u, target, stats.healPerTick * 2);
+      u.primaryCd = stats.primaryCd;
+    }
+    return;
+  }
+  if (stats.meleeRange > 0 && (cls === 'guardian' || cls === 'rogue' || cls === 'avatar')) {
+    if (d <= stats.meleeRange + tr) {
+      const per = stats.primaryDamage * (cls === 'avatar' ? avatarDamageMul(u) : 1);
+      if (cls === 'rogue') {
+        applyAnyDamage(state, u, target, per);
+        applyAnyDamage(state, u, target, per);
+      } else {
+        applyAnyDamage(state, u, target, per);
+      }
+      u.primaryCd = stats.primaryCd;
+    }
+    if (cls === 'avatar' && d <= stats.projectileRange + tr + 40) {
+      const p = spawnArrow(state, u, ang, stats.projectileSpeed, stats.primaryDamage, stats.projectileRange, 'wave');
+      p.hitsEveryone = true;
+    }
+  } else if (stats.projectileRange > 0) {
+    if (d <= stats.projectileRange) {
+      const p = spawnArrow(state, u, ang, stats.projectileSpeed, stats.primaryDamage, stats.projectileRange, cls === 'pyromancer' ? 'orb' : cls === 'engineer' ? 'bolt' : 'arrow');
+      if (cls === 'pyromancer') p.aoeRadius = FIRE_ORB_RADIUS;
+      p.hitsEveryone = true;
+      u.primaryCd = stats.primaryCd;
+    }
+  }
+}
+
+/** Paradox skill: inverted where it was support. */
+function doParadoxSkill(state: SimState, u: Unit, cls: ClassId, target: Unit): void {
+  const stats = classStats(cls);
+  if (cls === 'medic') {
+    // Sanctuary becomes a damage zone: everyone nearby (non-paradox) is hurt.
+    for (const t of state.units) {
+      if (!t.alive || t.paradox || t.id === u.id) continue;
+      if (dist(u.x, u.y, t.x, t.y) <= SANCTUARY_RADIUS) applyAnyDamage(state, u, t, 20);
+    }
+    u.skillCd = stats.skillCd;
+  } else if (cls === 'ranger') {
+    u.chargeTicks = PIERCING_CHARGE_TICKS;
+    u.skillCd = stats.skillCd;
+  } else if (cls === 'pyromancer') {
+    spawnMeteor(state, u, target.x, target.y);
+    u.skillCd = stats.skillCd;
+  } else if (cls === 'engineer') {
+    deployTurret(state, u); // hostileToAll inherits u.paradox = true
+    u.skillCd = stats.skillCd;
+  } else if (cls === 'guardian' || cls === 'rogue' || cls === 'avatar') {
+    // No useful skill inversion; put it on a short cooldown so it re-evaluates.
+    u.skillCd = 30;
+  }
+}
+
+/** Apply damage to any unit (boss routed through the threat path with credit). */
+function applyAnyDamage(state: SimState, owner: Unit, target: Unit, dmg: number): void {
+  if (target.kind === 'boss') {
+    dealDamageToBoss(state, target, owner, dmg);
+  } else {
+    dealDamageToUnit(target, dmg);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Engineer turrets
+// ---------------------------------------------------------------------------
+
+function updateTurrets(state: SimState, _boss: Unit | undefined): void {
+  for (const t of state.turrets) {
+    if (t.life <= 0 || t.hp <= 0) continue;
+    t.life -= 1;
+    if (t.fireCd > 0) t.fireCd -= 1;
+    if (t.fireCd > 0) continue;
+    // Find a target: normally enemies of the turret's team; a hostile turret
+    // (paradox owner) shoots the nearest living unit of any kind.
+    const target = turretTarget(state, t);
+    if (!target) continue;
+    t.facing = atan2Brads(target.y - t.y, target.x - t.x);
+    const dx = cosFx(t.facing) / TRIG_ONE;
+    const dy = sinFx(t.facing) / TRIG_ONE;
+    const v = perTick(TURRET_PROJECTILE_SPEED);
+    const p: Projectile = {
+      id: state.nextId++,
+      team: t.team,
+      ownerId: t.ownerId,
+      ownerSlot: t.ownerSlot,
+      x: t.x,
+      y: t.y,
+      vx: dx * v,
+      vy: dy * v,
+      damage: TURRET_DAMAGE,
+      life: Math.ceil(TURRET_RANGE / v),
+      piercing: false,
+      hits: [],
+      hitsEveryone: t.hostileToAll,
+      visual: 'bolt',
+    };
+    state.projectiles.push(p);
+    t.fireCd = TURRET_FIRE_CD;
+  }
+}
+
+function turretTarget(state: SimState, t: Turret): Unit | undefined {
+  let best: Unit | undefined;
+  let bestD = TURRET_RANGE;
+  let bestId = Number.POSITIVE_INFINITY;
+  for (const u of state.units) {
+    if (!u.alive || u.id === t.ownerId) continue;
+    const valid = t.hostileToAll ? !u.paradox : u.team !== t.team;
+    if (!valid) continue;
+    const d = dist(t.x, t.y, u.x, u.y);
+    if (d < bestD - 1e-9 || (Math.abs(d - bestD) <= 1e-9 && u.id < bestId)) {
+      bestD = d;
+      best = u;
+      bestId = u.id;
+    }
+  }
+  return best;
+}
+
+// ---------------------------------------------------------------------------
+// Avatar Convergence (contract 3.6)
+// ---------------------------------------------------------------------------
+
+/**
+ * While the Avatar's Convergence is firing, every alive echo (non-paradox) and
+ * the Avatar itself beam the boss for CONVERGENCE_BEAM_DPS/tick. The climax.
+ */
+function fireConvergenceBeams(state: SimState, avatar: Unit, boss: Unit | undefined): void {
+  if (!boss || !boss.alive) return;
+  const perTickDmg = CONVERGENCE_BEAM_DPS / 60;
+  // Avatar's own beam scales with its passive.
+  dealDamageToBoss(state, boss, avatar, perTickDmg * avatarDamageMul(avatar));
+  for (const u of state.units) {
+    if (u.kind === 'echo' && u.alive && !u.paradox) {
+      dealDamageToBoss(state, boss, u, perTickDmg);
+    }
+  }
+}
+
+function updateProjectiles(state: SimState, _boss: Unit | undefined): void {
   for (const p of state.projectiles) {
     if (p.life <= 0) continue;
+
+    // Fused ground strike (Meteor): hold, then detonate as an AoE.
+    if (p.fuseTicks !== undefined && p.fuseTicks > 0) {
+      p.fuseTicks -= 1;
+      p.life -= 1;
+      if (p.fuseTicks === 0) {
+        detonateAoe(state, p);
+        p.life = 0;
+      }
+      continue;
+    }
+
     p.x += p.vx;
     p.y += p.vy;
     p.life -= 1;
-    if (!boss || !boss.alive) continue;
-    if (p.team !== 'player') continue;
+
+    const owner = unitById(state, p.ownerId);
     if (p.piercing) {
-      // Piercing shot is a moving line segment; treat as a fat point vs boss.
-      if (p.hits.indexOf(boss.id) < 0 && dist(p.x, p.y, boss.x, boss.y) <= BOSS_RADIUS + PIERCING_HALF_WIDTH) {
-        const owner = unitById(state, p.ownerId);
-        if (owner) dealDamageToBoss(state, boss, owner, p.damage);
-        p.hits.push(boss.id);
+      for (const t of state.units) {
+        if (!projectileCanHit(p, t)) continue;
+        if (p.hits.indexOf(t.id) >= 0) continue;
+        if (dist(p.x, p.y, t.x, t.y) <= radiusFor(t) + PIERCING_HALF_WIDTH) {
+          dealProjectileDamage(state, t, owner, p.damage);
+          p.hits.push(t.id);
+        }
       }
     } else {
-      if (dist(p.x, p.y, boss.x, boss.y) <= BOSS_RADIUS) {
-        const owner = unitById(state, p.ownerId);
-        if (owner) dealDamageToBoss(state, boss, owner, p.damage);
-        p.life = 0;
+      for (const t of state.units) {
+        if (!projectileCanHit(p, t)) continue;
+        if (dist(p.x, p.y, t.x, t.y) <= radiusFor(t)) {
+          if (p.aoeRadius && p.aoeRadius > 0) {
+            detonateAoe(state, p);
+          } else {
+            dealProjectileDamage(state, t, owner, p.damage);
+          }
+          p.life = 0;
+          break;
+        }
       }
+    }
+  }
+}
+
+/** Apply an AoE projectile's damage to every valid target within its radius. */
+function detonateAoe(state: SimState, p: Projectile): void {
+  const owner = unitById(state, p.ownerId);
+  const r = p.aoeRadius ?? 0;
+  for (const t of state.units) {
+    if (!projectileCanHit(p, t)) continue;
+    if (dist(p.x, p.y, t.x, t.y) <= r + radiusFor(t)) {
+      dealProjectileDamage(state, t, owner, p.damage);
     }
   }
 }
@@ -637,9 +1288,14 @@ function dealDamageToBoss(state: SimState, boss: Unit, attacker: Unit, rawDamage
   }
 }
 
-/** Deal damage from an enemy attack to a player-team unit (damage only). */
+/** Deal damage to a unit (enemy attack, turret, or paradox). Damage only. */
 function dealDamageToUnit(u: Unit, rawDamage: number): void {
   if (rawDamage <= 0 || !u.alive) return;
+  // Rogue Shadow Step invulnerability: ignore hits while grace + charges remain.
+  if (u.invulnTicks > 0 && u.invulnHits > 0) {
+    u.invulnHits -= 1;
+    return;
+  }
   const stats = u.classId ? classStats(u.classId) : null;
   let dmg = rawDamage;
   if (stats) dmg *= stats.damageTakenMul;
@@ -661,6 +1317,8 @@ function unitById(state: SimState, id: number): Unit | undefined {
 // ---------------------------------------------------------------------------
 
 export const BOSS_RADIUS = 46;
+/** Body radius for player-team / paradox units (projectile hit tests). */
+export const UNIT_RADIUS = 18;
 const BOSS_SPEED = 90; // u/s toward target; overridden by level in future
 
 function updateBoss(state: SimState, boss: Unit): void {

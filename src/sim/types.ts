@@ -49,8 +49,20 @@ export function emptyInput(): InputFrame {
   return { moveX: 0, moveY: 0, aim: 0, aimActive: false, buttons: 0 };
 }
 
-/** The three M1 classes. String union so content data reads clearly. FROZEN. */
-export type ClassId = 'guardian' | 'medic' | 'ranger';
+/**
+ * Playable classes. The first three are FROZEN from M1; M2 adds four more
+ * (Pyromancer, Rogue, Engineer, Avatar) additively - a new enum member is an
+ * allowed extension of the frozen contract. `avatar` is last-slot-only (enforced
+ * by the runner, not the type).
+ */
+export type ClassId =
+  | 'guardian'
+  | 'medic'
+  | 'ranger'
+  | 'pyromancer'
+  | 'rogue'
+  | 'engineer'
+  | 'avatar';
 
 /** Kind discriminator for entities. FROZEN (later kinds are additive). */
 export type EntityKind = 'player' | 'echo' | 'boss' | 'projectile';
@@ -87,15 +99,49 @@ export interface Unit {
   /** Dash direction unit vector (valid while dashTicks > 0). */
   dashX: number;
   dashY: number;
+  /**
+   * Distance moved per tick during the current dash (units/tick). Set when a
+   * dash begins; lets Shadow Step use a longer travel than the shared dash.
+   * 0 falls back to the class's dashDistance/dashTicks. M2 additive field.
+   */
+  dashSpeed: number;
   /** Ticks remaining while this unit is a forced taunt target (boss-side use). */
   tauntTicks: number;
   /** Ticks remaining of the Medic Sanctuary damage-reduction buff on this unit. */
   sanctuaryTicks: number;
   /** Ticks remaining charging the Ranger Piercing Shot (0 = not charging). */
   chargeTicks: number;
+
+  // --- M2 additive fields (default 0/false; do not affect M1 semantics) ---
+  /**
+   * Paradox state (contract 3.4). 0 = normal echo/unit. >0 counts down the
+   * 0.5 s glitch telegraph; when it reaches 1 the unit becomes fully hostile.
+   * A hostile paradox echo has `paradox` true and `paradoxTelegraph` 0.
+   */
+  paradox: boolean;
+  /** Ticks remaining of the paradox glitch telegraph (0 once fully hostile). */
+  paradoxTelegraph: number;
+  /**
+   * Consecutive ticks the unit's live position has diverged >12u from its
+   * recording. Reset to 0 whenever it is within tolerance. Runner-fed.
+   */
+  divergedTicks: number;
+  /** Ticks of invulnerability remaining (Rogue Shadow Step grace). */
+  invulnTicks: number;
+  /** Remaining invulnerable-hit charges (Rogue: ignore next N hits). */
+  invulnHits: number;
+  /**
+   * Avatar Convergence charge in ticks accumulated toward CONVERGENCE_CHARGE.
+   * Only meaningful for the Avatar; charges faster per alive echo.
+   */
+  convergeCharge: number;
+  /** Ticks remaining of the Convergence beam being fired (visual + damage). */
+  convergeFireTicks: number;
+  /** Cached count of alive non-paradox echoes (Avatar passive scaling), per tick. */
+  allyBuffCount: number;
 }
 
-/** A lightweight projectile (arrows, etc.). FROZEN. */
+/** A lightweight projectile (arrows, etc.). FROZEN (M2 adds optional fields). */
 export interface Projectile {
   id: number;
   team: Team;
@@ -113,6 +159,46 @@ export interface Projectile {
   piercing: boolean;
   /** Ids already hit (so a piercing shot hits each enemy once). */
   hits: number[];
+
+  // --- M2 additive fields ---
+  /** Area-of-effect radius on impact (0 = single-target point). Pyro fire orb. */
+  aoeRadius?: number;
+  /**
+   * Delayed ground strike (Pyromancer Meteor): while > 0 the projectile hangs
+   * at (x,y) as a telegraph, then detonates for `damage` in `aoeRadius`.
+   */
+  fuseTicks?: number;
+  /**
+   * Owning team the projectile can damage. Normally the opposite of `team`.
+   * A paradox owner's projectiles hit everyone (see sim). Optional; when
+   * omitted the sim uses the default enemy-of-team rule.
+   */
+  hitsEveryone?: boolean;
+  /** Visual kind hint for the renderer (never read by sim gameplay). */
+  visual?: 'arrow' | 'orb' | 'meteor' | 'bolt' | 'slash' | 'wave' | 'beam';
+}
+
+/**
+ * An Engineer turret (contract section 4). Deployed by the Skill; lasts a fixed
+ * duration, has HP, and auto-fires at the nearest valid target. A paradox
+ * owner's turret shoots anyone. M2 additive entity.
+ */
+export interface Turret {
+  id: number;
+  ownerId: number;
+  ownerSlot: number;
+  team: Team;
+  x: number;
+  y: number;
+  hp: number;
+  maxHp: number;
+  /** Ticks remaining before the turret expires. */
+  life: number;
+  /** Ticks until the turret may fire again. */
+  fireCd: number;
+  /** True once the owner turned paradox: the turret shoots anyone. */
+  hostileToAll: boolean;
+  facing: number;
 }
 
 /** A single boss telegraph/attack in flight. FROZEN (geometry union). */
@@ -203,6 +289,58 @@ export interface SimState {
   outcome: LoopOutcome;
   /** Entity id of the live player unit this loop (-1 if none). */
   playerId: number;
+
+  // --- M2 additive fields ---
+  /** Engineer turrets currently deployed. */
+  turrets: Turret[];
+  /** Interactable objects (Time Shards, levers) whose state anchors paradoxes. */
+  interactables: Interactable[];
+  /**
+   * Paradox events raised this loop (contract 3.4), in occurrence order. Each
+   * records the tick, the slot that turned paradox, the cause, and the position
+   * for the floating text + timeline marker. Presentation reads these.
+   */
+  paradoxEvents: ParadoxEvent[];
+}
+
+/**
+ * A fixed interactable on the arena (contract 3.4): a pickup/lever whose state
+ * is deterministic and whose recorded interaction is an anchor. When an echo's
+ * recorded anchor can no longer happen (item already taken by an earlier slot,
+ * lever already flipped) within +/-5 ticks, the echo turns paradox. M2 entity.
+ */
+export interface Interactable {
+  id: number;
+  /**
+   * Stable index into the level's interactable list. Unlike `id` (re-allocated
+   * each loop), this is identical across loops, so a recorded anchor can point
+   * at the same conceptual object in a later, rewritten loop.
+   */
+  defIndex: number;
+  kind: 'shard' | 'lever';
+  x: number;
+  y: number;
+  radius: number;
+  /** True once consumed/flipped this loop. Levers toggle; shards stay taken. */
+  taken: boolean;
+  /** Slot that took/flipped it this loop (-1 if none yet). */
+  takenBySlot: number;
+  /** Tick it was taken at (-1 if not yet). */
+  takenAtTick: number;
+}
+
+/** Why an echo became a paradox (for floating text + timeline markers). */
+export type ParadoxCause = 'anchor-broken' | 'path-diverged';
+
+/** A paradox event raised during a loop (presentation-only consumer). */
+export interface ParadoxEvent {
+  tick: number;
+  slot: number;
+  cause: ParadoxCause;
+  /** Human-readable cause, e.g. "Key taken by Slot 3". */
+  detail: string;
+  x: number;
+  y: number;
 }
 
 /**

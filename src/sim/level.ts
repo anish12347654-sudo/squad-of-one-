@@ -42,4 +42,18 @@ export interface LevelDef {
   };
   /** Stars: minimum echoes alive for the 2nd star. */
   starEchoesAlive: number;
+  /**
+   * Optional interactables (M2): Time Shards / levers whose recorded pickup is
+   * an anchor for paradox detection (contract 3.4). Pure data; the sim spawns a
+   * live Interactable per entry each loop. Omitted for M1 levels.
+   */
+  interactables?: LevelInteractable[];
+}
+
+/** A level-authored interactable placement (M2). */
+export interface LevelInteractable {
+  kind: 'shard' | 'lever';
+  x: number;
+  y: number;
+  radius: number;
 }

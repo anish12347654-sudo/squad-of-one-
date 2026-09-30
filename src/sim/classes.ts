@@ -118,13 +118,105 @@ export const RANGER: ClassStats = {
   dashDistance: DASH_DISTANCE,
 };
 
+// ---------------------------------------------------------------------------
+// M2 classes (brief section 4). Numbers from the brief; tuned lightly for feel.
+// ---------------------------------------------------------------------------
+
+export const PYROMANCER: ClassStats = {
+  id: 'pyromancer',
+  maxHp: 150,
+  speed: 185,
+  damageTakenMul: 1,
+  primaryCd: Math.round(0.8 * SECOND), // fire orb / 0.8 s
+  meleeRange: 0,
+  meleeHalfArc: 0,
+  primaryDamage: 30, // 30 dmg in 50u radius
+  healPerTick: 0,
+  healRange: 0,
+  projectileSpeed: 300, // 300 u/s
+  projectileRange: 520,
+  skillCd: 12 * SECOND, // Meteor cd 12 s
+  dashCd: DASH_CD,
+  dashTicks: DASH_TICKS,
+  dashDistance: DASH_DISTANCE,
+};
+
+export const ROGUE: ClassStats = {
+  id: 'rogue',
+  maxHp: 170,
+  speed: 230,
+  damageTakenMul: 1,
+  primaryCd: Math.round(0.4 * SECOND), // twin slash / 0.4 s
+  meleeRange: 45, // 45u reach
+  meleeHalfArc: 512, // ~45 deg half-arc, wide slash
+  primaryDamage: 14, // 2 x 14 dmg (applied twice; x2 from behind)
+  healPerTick: 0,
+  healRange: 0,
+  projectileSpeed: 0,
+  projectileRange: 0,
+  skillCd: 6 * SECOND, // Shadow Step cd 6 s
+  dashCd: DASH_CD,
+  dashTicks: DASH_TICKS,
+  dashDistance: DASH_DISTANCE,
+};
+
+export const ENGINEER: ClassStats = {
+  id: 'engineer',
+  maxHp: 200,
+  speed: 180,
+  damageTakenMul: 1,
+  primaryCd: Math.round(0.3 * SECOND), // bolt / 0.3 s
+  meleeRange: 0,
+  meleeHalfArc: 0,
+  primaryDamage: 12, // 12 dmg
+  healPerTick: 0,
+  healRange: 0,
+  projectileSpeed: 640,
+  projectileRange: 300, // range 300u
+  skillCd: 12 * SECOND, // Turret cd 12 s
+  dashCd: DASH_CD,
+  dashTicks: DASH_TICKS,
+  dashDistance: DASH_DISTANCE,
+};
+
+export const AVATAR: ClassStats = {
+  id: 'avatar',
+  maxHp: 300,
+  speed: 210,
+  damageTakenMul: 0.85,
+  primaryCd: Math.round(0.35 * SECOND), // chrono blade / 0.35 s
+  meleeRange: 70, // melee + short wave
+  meleeHalfArc: 448,
+  primaryDamage: 25, // 25 dmg
+  healPerTick: 0,
+  healRange: 0,
+  projectileSpeed: 520, // short wave projectile
+  projectileRange: 200,
+  skillCd: 1, // Convergence is charge-gated, not cd-gated (see sim)
+  dashCd: DASH_CD,
+  dashTicks: DASH_TICKS,
+  dashDistance: DASH_DISTANCE,
+};
+
 const TABLE: Record<ClassId, ClassStats> = {
   guardian: GUARDIAN,
   medic: MEDIC,
   ranger: RANGER,
+  pyromancer: PYROMANCER,
+  rogue: ROGUE,
+  engineer: ENGINEER,
+  avatar: AVATAR,
 };
 
-export const CLASS_IDS: readonly ClassId[] = ['guardian', 'medic', 'ranger'];
+export const CLASS_IDS: readonly ClassId[] = [
+  'guardian',
+  'medic',
+  'ranger',
+  'pyromancer',
+  'rogue',
+  'engineer',
+  'avatar',
+];
 
 export function classStats(id: ClassId): ClassStats {
   return TABLE[id];
@@ -144,3 +236,54 @@ export const PIERCING_DAMAGE = 120;
 export const PIERCING_HALF_WIDTH = 24;
 export const PIERCING_RANGE = 700;
 export const PIERCING_SPEED = 900;
+
+// --- M2 skill tuning (frozen additive) ---
+
+/** Pyromancer fire orb: AoE radius on impact. */
+export const FIRE_ORB_RADIUS = 50;
+/** Pyromancer Meteor: land delay, damage, AoE radius. */
+export const METEOR_FUSE_TICKS = Math.round(1.2 * SECOND);
+export const METEOR_DAMAGE = 220;
+export const METEOR_RADIUS = 120;
+
+/** Rogue twin slash: bonus multiplier when striking from behind the target. */
+export const ROGUE_BACKSTAB_MUL = 2;
+/** Rogue Shadow Step: dash distance, dash ticks, invulnerable-hit charges. */
+export const SHADOW_STEP_DISTANCE = 220;
+export const SHADOW_STEP_TICKS = Math.round(0.3 * SECOND);
+export const SHADOW_STEP_INVULN_HITS = 3;
+
+/** Engineer Turret: lifetime, HP, damage, fire cadence, deploy offset. */
+export const TURRET_LIFE_TICKS = 10 * SECOND;
+export const TURRET_HP = 120;
+export const TURRET_DAMAGE = 10;
+export const TURRET_FIRE_CD = Math.round(0.5 * SECOND);
+export const TURRET_RANGE = 360;
+export const TURRET_PROJECTILE_SPEED = 620;
+
+/**
+ * Avatar Convergence: base charge time (ticks) and the extra charge rate per
+ * alive echo. At tick T the charge advances by 1 + CONVERGE_PER_ECHO * echoes,
+ * so more alive echoes fill the bar faster (contract 3.6).
+ */
+export const CONVERGENCE_CHARGE = 8 * SECOND;
+export const CONVERGE_PER_ECHO = 0.5;
+/** Convergence fires for this many ticks; each alive echo beams the boss. */
+export const CONVERGENCE_FIRE_TICKS = Math.round(0.9 * SECOND);
+/** Per-tick beam damage from each alive echo during Convergence. */
+export const CONVERGENCE_BEAM_DPS = 90;
+/** Avatar passive: damage multiplier bonus per alive non-paradox echo. */
+export const AVATAR_DAMAGE_PER_ECHO = 0.2;
+
+// --- Paradox tuning (contract 3.4) ---
+
+/** Anchor tolerance: a recorded interaction must be possible within +/-N ticks. */
+export const PARADOX_ANCHOR_TOLERANCE = 5;
+/** Path divergence distance threshold in units. */
+export const PARADOX_DIVERGE_DIST = 12;
+/** Consecutive diverged ticks before a paradox triggers. */
+export const PARADOX_DIVERGE_TICKS = 20;
+/** Glitch telegraph duration before a paradox echo turns fully hostile. */
+export const PARADOX_TELEGRAPH_TICKS = Math.round(0.5 * SECOND);
+/** A hostile paradox echo attacks the nearest non-paradox unit within this range. */
+export const PARADOX_AGGRO_RANGE = 400;
