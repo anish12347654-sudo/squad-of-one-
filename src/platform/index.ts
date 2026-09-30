@@ -5,3 +5,4 @@
 
 export * from './storage.js';
 export * from './haptics.js';
+export * from './share.js';

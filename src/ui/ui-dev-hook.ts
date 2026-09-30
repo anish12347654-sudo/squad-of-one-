@@ -35,6 +35,9 @@ const UI_SCENE_KEYS = [
   'ui-credits',
   'ui-pause',
   'ui-results',
+  'ui-daily',
+  'ui-daily-results',
+  'ui-timechess',
   'GameScene',
 ];
 

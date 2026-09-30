@@ -41,21 +41,28 @@ export class TitleScene extends Phaser.Scene {
 
     const save = getSave();
     const next = nextLevelId(save, CAMPAIGN_LEVELS);
-    const startY = height * 0.42;
+    const startY = height * 0.38;
     const bw = Math.min(300, width - 60);
-    const gap = 58;
+    const gap = 46;
 
-    button(this, cx, startY, bw, 46, next ? 'menu.continue' : 'menu.play', () => this.goMap(), {
+    button(this, cx, startY, bw, 40, next ? 'menu.continue' : 'menu.play', () => this.goMap(), {
       color: UI_COLORS.accent2,
       name: 'btn-continue',
     });
-    button(this, cx, startY + gap, bw, 46, 'menu.worldMap', () => this.goMap(), { name: 'btn-map' });
-    button(this, cx, startY + gap * 2, bw, 46, 'menu.shop', () => this.scene.start('ui-shop'));
-    button(this, cx, startY + gap * 3, bw, 46, 'menu.settings', () => this.scene.start('ui-settings'));
-    button(this, cx, startY + gap * 4, bw, 46, 'menu.replays', () => this.scene.start('ui-replays'));
-    button(this, cx, startY + gap * 5, bw, 46, 'menu.credits', () => this.scene.start('ui-credits'));
+    button(this, cx, startY + gap, bw, 40, 'menu.worldMap', () => this.goMap(), { name: 'btn-map' });
+    button(this, cx, startY + gap * 2, bw, 40, 'menu.daily', () => this.scene.start('ui-daily'), {
+      color: UI_COLORS.gold,
+      name: 'btn-daily',
+    });
+    button(this, cx, startY + gap * 3, bw, 40, 'menu.timeChess', () => this.scene.start('ui-timechess'), {
+      name: 'btn-timechess',
+    });
+    button(this, cx, startY + gap * 4, bw, 40, 'menu.shop', () => this.scene.start('ui-shop'));
+    button(this, cx, startY + gap * 5, bw, 40, 'menu.settings', () => this.scene.start('ui-settings'));
+    button(this, cx, startY + gap * 6, bw, 40, 'menu.replays', () => this.scene.start('ui-replays'), { name: 'btn-replays' });
+    button(this, cx, startY + gap * 7, bw, 40, 'menu.credits', () => this.scene.start('ui-credits'));
 
-    label(this, cx, height - 30, 'menu.tapToStart', { size: 12, color: UI_COLORS.textDim });
+    label(this, cx, height - 24, 'menu.tapToStart', { size: 12, color: UI_COLORS.textDim });
 
     const unlock = (): void => {
       const audio = getAudioEngine();

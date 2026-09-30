@@ -245,8 +245,9 @@ export function createLevelState(
     const unit = makeUnit(state.nextId++, isLive ? 'player' : 'echo', 'player', slot);
     unit.classId = cls;
     const stats = classStats(cls);
-    unit.hp = stats.maxHp;
+    const hpScale = level.echoHpScale && level.echoHpScale > 0 ? level.echoHpScale : 1;
     unit.maxHp = stats.maxHp;
+    unit.hp = Math.max(1, Math.round(stats.maxHp * hpScale));
     if (spawn) {
       unit.x = spawn.x;
       unit.y = spawn.y;

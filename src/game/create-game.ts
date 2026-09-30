@@ -19,6 +19,9 @@ import { ReplaysScene } from '@ui/replays-scene.js';
 import { CreditsScene } from '@ui/credits-scene.js';
 import { PauseScene } from '@ui/pause-scene.js';
 import { ResultsScene } from '@ui/results-scene.js';
+import { DailyScene } from '@ui/daily-scene.js';
+import { DailyResultsScene } from '@ui/daily-results-scene.js';
+import { TimeChessScene } from '@ui/time-chess-scene.js';
 import { installUiDevHook } from '@ui/ui-dev-hook.js';
 
 export const GAME_WIDTH = 390;
@@ -51,6 +54,9 @@ export function createGame(parent: HTMLElement | string): Phaser.Game {
       ReplaysScene,
       CreditsScene,
       PauseScene,
+      DailyScene,
+      DailyResultsScene,
+      TimeChessScene,
     ],
     render: {
       roundPixels: false,

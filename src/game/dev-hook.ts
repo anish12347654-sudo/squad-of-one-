@@ -24,6 +24,7 @@ interface HookableScene {
   skipPlanning(): void;
   doRewrite(slot: number, newClass?: ClassId): void;
   driveWithBots(shardSlots?: Record<number, number>): void;
+  getLastReplayCode(): string | null;
   getPhase(): string;
   getParadoxCount(): number;
   getRunner(): {
@@ -87,6 +88,8 @@ export interface SquadDevGlobal {
   paradoxCount(): number;
   /** Install a state-aware bot driver for the live player (dev/e2e). */
   driveWithBots(shardSlots?: Record<number, number>): void;
+  /** The last winning run's replay code (M4), or null. */
+  lastReplayCode(): string | null;
 }
 
 declare global {
@@ -120,6 +123,7 @@ export function installDevHook(scene: HookableScene): DevHookApi {
     shards: () => scene.getRunner().shards,
     paradoxCount: () => scene.getParadoxCount(),
     driveWithBots: (shardSlots) => scene.driveWithBots(shardSlots),
+    lastReplayCode: () => scene.getLastReplayCode(),
   };
 
   if (typeof window !== 'undefined') {

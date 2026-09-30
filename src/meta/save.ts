@@ -17,7 +17,7 @@ import type { LocaleId } from '@i18n/index.js';
 import { allCosmeticIds, defaultCosmetic } from './cosmetics.js';
 
 /** Current save schema version. Bump whenever the shape changes; add a migration. */
-export const SAVE_VERSION = 3;
+export const SAVE_VERSION = 4;
 
 /** Text-size accessibility setting. */
 export type TextSize = 'small' | 'medium' | 'large';
@@ -82,6 +82,8 @@ export interface SaveGame {
   replaySeq: number;
   /** True once the first-time experience has been completed. */
   seenIntro: boolean;
+  /** Daily Paradox local best score per date key (M4). */
+  dailyBest: Record<string, number>;
 }
 
 export const MAX_STORED_REPLAYS = 20;
@@ -125,6 +127,7 @@ export function freshSave(): SaveGame {
     settings: defaultSettings(),
     replaySeq: 0,
     seenIntro: false,
+    dailyBest: {},
   };
 }
 
@@ -142,6 +145,7 @@ export function freshSave(): SaveGame {
  *   v2: added `mastery` map and `seenIntro`.
  *   v3: added `replaySeq` (monotonic) + `settings.assistMode`; renamed the old
  *       `sound` boolean into the three volume sliders.
+ *   v4: added `dailyBest` (Daily Paradox local best per date key).
  */
 type Migration = (save: Record<string, unknown>) => Record<string, unknown>;
 
@@ -168,6 +172,12 @@ const MIGRATIONS: Record<number, Migration> = {
     if (typeof settings.assistMode !== 'boolean') settings.assistMode = false;
     s.settings = settings;
     s.version = 3;
+    return s;
+  },
+  // v3 -> v4
+  3: (s) => {
+    if (typeof s.dailyBest !== 'object' || s.dailyBest === null) s.dailyBest = {};
+    s.version = 4;
     return s;
   },
 };
@@ -282,7 +292,19 @@ export function normalize(raw: Record<string, unknown>): SaveGame {
     settings,
     replaySeq,
     seenIntro: raw.seenIntro === true,
+    dailyBest: normalizeDailyBest(raw.dailyBest),
   };
+}
+
+/** Sanitize the Daily best map: string keys -> non-negative integer scores. */
+function normalizeDailyBest(raw: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (typeof raw === 'object' && raw !== null) {
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (typeof v === 'number' && Number.isFinite(v)) out[k] = Math.max(0, Math.floor(v));
+    }
+  }
+  return out;
 }
 
 /** Best replays first: higher stars, then earlier winning slot, then newer seq. */
@@ -375,6 +397,22 @@ export function addReplay(save: SaveGame, entry: Omit<StoredReplay, 'seq'>): Sav
   next.replays.sort(replayOrder);
   next.replays = next.replays.slice(0, MAX_STORED_REPLAYS);
   return next;
+}
+
+/**
+ * Record a Daily Paradox score, keeping the local best per date key. Returns
+ * the updated save and whether this run set a new best.
+ */
+export function recordDailyResult(
+  save: SaveGame,
+  dateKey: string,
+  score: number,
+): { save: SaveGame; newBest: boolean } {
+  const prev = save.dailyBest[dateKey] ?? 0;
+  if (score <= prev) return { save, newBest: false };
+  const next = structuredCloneSave(save);
+  next.dailyBest[dateKey] = score;
+  return { save: next, newBest: true };
 }
 
 /** Attempt to buy a cosmetic; returns null if unaffordable/owned/unknown. */

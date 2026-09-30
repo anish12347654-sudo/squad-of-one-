@@ -130,12 +130,55 @@ Completed in the M3 continuation (all gates green: lint/typecheck/test(172)/buil
       heavy single-`vite preview` render loop is not starved by parallel
       contexts; reliably green across repeated `npm run e2e` runs.
 
-## M4 - Modes & polish
+## M4 - Modes & sharing ✅ (complete)
 
-- [ ] Daily seed mode + leaderboard hook
-- [ ] Replay share flow (short codes)
-- [ ] VFX (Phaser 4 unified Filters), audio, juice
-- [ ] Multi-viewport screenshot inspection (390x844, 844x390, 768x1024, 1920x1080)
+All gates green: lint / typecheck / test (198) / build / e2e (11: 6 M3 + 5 M4).
+
+- [x] Replay codes: base64url of a compact binary payload {simVersion,
+      contentHash, levelId, seed, per-slot class + RLE inputs} (`src/sim/
+      replay-code.ts` + `version.ts`, `src/content/content-hash.ts`). `/#r=<code>`
+      plays back deterministically through the frozen `step()` path (`src/game/
+      replay-link.ts`, main.ts hash route + GameScene replay mode). "Beat this
+      run" starts the same level fresh. Version/content mismatch shows a clear
+      localized message and NEVER desyncs silently (typed decode result).
+      Round-trip + mismatch + deterministic-playback tests.
+- [x] Daily Paradox: date-seed computed OUTSIDE the sim picks a level + 2
+      modifiers (typed data in `src/content/modifiers.ts`, applied
+      deterministically: enraged/tanky/swift boss, five-slots, short-loop,
+      glass-echoes via the new additive `LevelDef.echoHpScale`). Score = win
+      time + echoes alive + rewrites + early victory (`src/content/daily.ts`).
+      Local best (`SaveGame.dailyBest`, save v4) + shareable PNG result card
+      (`src/ui/daily-scene.ts`, `daily-results-scene.ts`).
+- [x] Time Chess: self-contained PURE duel sim (`src/content/time-chess*.ts`),
+      5 loops x 15 s, simultaneous recording over replaying prior loops, unique
+      class per loop (no Avatar), control-zone + units-alive scoring. Vs a
+      DETERMINISTIC 3-difficulty AI bot (seeded, engine-free; identical play for
+      same seed+difficulty) and local 2-player (split keyboard; split touch on
+      tablets). `src/ui/time-chess-scene.ts`.
+- [x] Clip export (`src/platform/share.ts`): canvas.captureStream +
+      MediaRecorder (mimeType via isTypeSupported), game audio via
+      MediaStreamAudioDestinationNode, small watermark, Web Share API (files)
+      with download fallback; feature-detected, degrades to a watermarked PNG
+      where unsupported. PNG result cards for victories + Daily results.
+- [x] Menus: Replays screen (paste/Load & Play codes, Beat This Run, top-20
+      from save) + share options wired from the victory cinematic / results
+      (`src/ui/share-actions.ts`). Daily + Time Chess entries on the title menu.
+      All new UI strings localized en + hi (no hard-coded strings, test-enforced).
+- [x] Tests: replay-code base64url + RLE round trip; version/content mismatch
+      message path (no silent desync); Daily seed -> deterministic level +
+      modifier selection + scoring; Time Chess AI determinism + score; replay
+      deterministic playback. Determinism/invariance/solution/Worker-parity
+      suites still green.
+- [x] E2E (headless Playwright): export a clip (or graceful fallback), generate
+      a result-card PNG, load a `/#r=` replay for deterministic playback, run a
+      Time Chess vs-AI match; screenshots (Daily result card, Time Chess,
+      Replays screen, exported card) captured + inspected; zero console errors.
+- [x] Git commit for M4.
+
+### Remaining M4 brief bullets folded into M5 (polish)
+- [ ] Multi-viewport screenshot inspection also for the new mode screens
+      (Daily / Time Chess) at 844x390 / 768x1024 / 1920x1080 (the M3 spec
+      already covers the core menus at all four; FIT letterboxes one layout).
 
 ## M5 - Release readiness
 

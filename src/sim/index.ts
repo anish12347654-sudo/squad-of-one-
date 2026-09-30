@@ -14,6 +14,8 @@ export * from './types.js';
 export * from './classes.js';
 export * from './threat.js';
 export * from './recording.js';
+export * from './version.js';
+export * from './replay-code.js';
 export * from './spatial-hash.js';
 export * from './level.js';
 export * from './boss-pattern.js';

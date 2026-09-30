@@ -60,6 +60,14 @@ export interface LevelDef {
   objective?: SimObjective;
   /** Non-boss enemy waves (brief section 5), spawned deterministically. */
   minions?: LevelMinion[];
+
+  /**
+   * M4 additive: multiply every echo's (and the live player's) starting HP by
+   * this factor when the loop spawns. Defaults to 1. Used by Daily Paradox
+   * modifiers (e.g. "glass echoes" at 0.5). Deterministic - it is applied once
+   * at spawn, so hashed state stays reproducible.
+   */
+  echoHpScale?: number;
 }
 
 /** A level-authored interactable placement (M2 + M3 objective mechanics). */

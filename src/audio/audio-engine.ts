@@ -373,6 +373,16 @@ export class AudioEngine {
     osc.stop(t + dur + 0.02);
   }
 
+  /**
+   * The live AudioContext + master output node, for the clip exporter to mix
+   * game audio into a MediaStreamAudioDestinationNode (brief 6.4). Null until
+   * audio is unlocked by a user gesture.
+   */
+  getAudioGraph(): { context: AudioContext; source: AudioNode } | null {
+    if (this.ctx && this.master) return { context: this.ctx, source: this.master };
+    return null;
+  }
+
   destroy(): void {
     this.stopMusic();
     try {

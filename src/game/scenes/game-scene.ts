@@ -41,6 +41,19 @@ import { installFilters, type SceneFilters } from '../render/filters.js';
 import { buildPreSimRequest, runPreSimClient, type PreSimRun } from '../presim-client.js';
 import { getAudioEngine, type AudioEngine } from '@audio/audio-engine.js';
 import { ALL_BOTS, shardGrabberBot } from '@content/bots.js';
+import { buildReplayCode, type ReplayPlayback } from '../replay-link.js';
+import { emptyInput } from '@sim/index.js';
+import { exportVictoryClip, copyToClipboard } from '@ui/share-actions.js';
+import { scoreDaily } from '@content/index.js';
+
+/** Daily Paradox run config passed into GameScene. */
+export interface DailyConfig {
+  dateKey: string;
+  seed: number;
+  levelId: string;
+  /** i18n name keys for the two active modifiers (for the result card). */
+  modifierNameKeys: string[];
+}
 
 const MAX_TICKS_PER_FRAME = 5;
 
@@ -101,9 +114,21 @@ export class GameScene extends Phaser.Scene {
   /** Whether this run was launched from the UI (route results to ResultsScene). */
   private fromUi = false;
 
-  init(data: { levelId?: string; from?: string }): void {
+  init(data: {
+    levelId?: string;
+    from?: string;
+    replay?: ReplayPlayback;
+    def?: LevelDef;
+    daily?: DailyConfig;
+  }): void {
     this.fromUi = data.from !== undefined;
-    if (data.levelId) {
+    this.replay = data.replay ?? null;
+    this.daily = data.daily ?? null;
+    if (data.def) {
+      // A raw LevelDef override (Daily Paradox: campaign level + modifiers).
+      this.level = data.def;
+      this.campaignLevelId = null;
+    } else if (data.levelId) {
       const lvl = campaignLevelById(data.levelId);
       if (lvl) {
         this.level = lvl.def;
@@ -113,6 +138,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private campaignLevelId: string | null = null;
+  /** Non-null when this scene is playing back a shared replay code. */
+  private replay: ReplayPlayback | null = null;
+  /** Non-null when this run is a Daily Paradox (custom scoring + result card). */
+  private daily: DailyConfig | null = null;
 
   create(): void {
     this.cameras.main.setBackgroundColor(COLORS.bg);
@@ -139,7 +168,8 @@ export class GameScene extends Phaser.Scene {
       .setDepth(31);
 
     this.computeTransform();
-    this.showClassPicker();
+    if (this.replay) this.beginReplay(this.replay);
+    else this.showClassPicker();
 
     this.game.events.on(Phaser.Core.Events.HIDDEN, this.onHidden, this);
     this.game.events.on(Phaser.Core.Events.VISIBLE, this.onVisible, this);
@@ -411,12 +441,22 @@ export class GameScene extends Phaser.Scene {
         return;
       }
       if (this.runner.needsClassChoice()) {
-        this.startRewind(() => this.showClassPicker());
+        if (this.isReplayPlayback && this.replay) {
+          const rp = this.replay;
+          this.startRewind(() => this.autoPickAndPlay(rp));
+        } else {
+          this.startRewind(() => this.showClassPicker());
+        }
         this.accumulator = 0;
         return;
       }
       if (this.runner.awaitingDecision()) {
-        this.startRewind(() => this.showDecision());
+        // Daily Paradox is a single attempt: a surviving boss ends the run.
+        if (this.daily) {
+          this.startRewind(() => this.showResult('failed'));
+        } else {
+          this.startRewind(() => this.showDecision());
+        }
         this.accumulator = 0;
         return;
       }
@@ -571,8 +611,47 @@ export class GameScene extends Phaser.Scene {
     this.phase = 'result';
     const stars = this.runner.computeStars();
 
+    // A winning run can be shared as a portable replay code (M4).
+    let replayCode: string | undefined;
+    if (result === 'won') {
+      try {
+        replayCode = buildReplayCode(this.runner);
+        this.lastReplayCode = replayCode;
+      } catch {
+        replayCode = undefined;
+      }
+    }
+
+    // Daily Paradox: compute the daily score (outside the sim) + hand off to the
+    // Daily results scene, which keeps a local best + a shareable card.
+    if (this.daily) {
+      const won = result === 'won';
+      const score = scoreDaily({
+        won,
+        winTick: this.runner.state.tick,
+        loopLength: this.level.loopLength,
+        echoesAlive: stars.echoesAlive,
+        rewritesUsed: stars.rewritesUsed,
+        wonOnSlot: this.runner.wonOnSlot,
+        slotCount: this.level.slotCount,
+      });
+      this.scene.start('ui-daily-results', {
+        dateKey: this.daily.dateKey,
+        seed: this.daily.seed,
+        levelId: this.daily.levelId,
+        modifierNameKeys: this.daily.modifierNameKeys,
+        won,
+        score,
+        stars: stars.count,
+        echoesAlive: stars.echoesAlive,
+        rewritesUsed: stars.rewritesUsed,
+        wonOnSlot: this.runner.wonOnSlot,
+      });
+      return;
+    }
+
     // When launched from the UI, hand off to the localized ResultsScene which
-    // records the outcome into the save + offers Next/Retry/Map.
+    // records the outcome into the save + offers Next/Retry/Map + Share.
     if (this.fromUi && this.campaignLevelId) {
       const lastSlot = this.runner.recordingSlot;
       const cls = this.runner.slotClasses[lastSlot] ?? null;
@@ -586,6 +665,7 @@ export class GameScene extends Phaser.Scene {
         assistUsed: false,
         wonOnSlot: this.runner.wonOnSlot,
         masteryClass: cls,
+        ...(replayCode ? { replayCode } : {}),
       });
       return;
     }
@@ -596,8 +676,18 @@ export class GameScene extends Phaser.Scene {
       this.banner.setText('VICTORY');
       this.drawStars(stars.count);
       this.overlayText(cx, this.scale.height / 2 + 60, `${stars.echoesAlive} echoes alive · ${stars.rewritesUsed} rewrites`, 13, '#aab');
-      // Share-options placeholder (full clip export lands in M4).
-      this.overlayButton(cx, this.scale.height - 190, 'Share (coming in M4)', () => this.audio.sfx('ui'), 220, 0x39415c);
+      // Share options (M4): export a victory clip from the live canvas + audio.
+      this.overlayButton(cx, this.scale.height - 244, 'Export Clip', () => {
+        this.audio.sfx('ui');
+        void exportVictoryClip(this.game);
+      }, 220, 0x64ffda);
+      if (replayCode) {
+        const code = replayCode;
+        this.overlayButton(cx, this.scale.height - 190, 'Copy Replay Code', () => {
+          this.audio.sfx('ui');
+          void copyToClipboard(code);
+        }, 220, 0x2b60ff);
+      }
     } else {
       this.banner.setText('TIMELINE FAILED');
     }
@@ -647,13 +737,15 @@ export class GameScene extends Phaser.Scene {
       }
       if (this.runner.needsClassChoice()) {
         this.snapshots = [];
-        this.showClassPicker();
+        if (this.isReplayPlayback && this.replay) this.autoPickAndPlay(this.replay);
+        else this.showClassPicker();
         this.accumulator = 0;
         return;
       }
       if (this.runner.awaitingDecision()) {
         this.snapshots = [];
-        this.showDecision();
+        if (this.daily) this.showResult('failed');
+        else this.showDecision();
         this.accumulator = 0;
         return;
       }
@@ -682,6 +774,39 @@ export class GameScene extends Phaser.Scene {
       const bot = ALL_BOTS[cls];
       return bot ? bot(this.runner.state, slot, tick) : { moveX: 0, moveY: 0, aim: 0, aimActive: false, buttons: 0 };
     });
+  }
+
+  // ================= Replay playback (M4, `/#r=<code>`) =================
+
+  /**
+   * Deterministically play back a decoded replay code. Auto-picks each slot's
+   * recorded class and feeds the recorded input frames through the SAME
+   * scripted-source path used by e2e/solutions, so playback is bit-identical to
+   * the original run. The final loop reproduces the win, then the cinematic +
+   * results run as normal (routed to the ResultsScene when from the UI).
+   */
+  private beginReplay(playback: ReplayPlayback): void {
+    this.isReplayPlayback = true;
+    // Recorded frames for the CURRENT recording slot drive the live player.
+    this.controller.setScriptedSource((tick: number) => {
+      const slot = this.runner.recordingSlot;
+      const frames = playback.slotFrames[slot];
+      if (!frames) return emptyInput();
+      return frames[tick] ?? emptyInput();
+    });
+    this.autoPickAndPlay(playback);
+  }
+
+  private isReplayPlayback = false;
+
+  /** Pick the recorded class for the current slot and start its loop. */
+  private autoPickAndPlay(playback: ReplayPlayback): void {
+    if (!this.runner.needsClassChoice()) return;
+    const slot = this.runner.recordingSlot;
+    const cls = playback.slotClasses[slot];
+    if (!cls) return;
+    this.runner.chooseClass(cls);
+    this.beginPlaying();
   }
 
   restart(): void {
@@ -1291,5 +1416,11 @@ export class GameScene extends Phaser.Scene {
   }
   getParadoxCount(): number {
     return this.runner.state.paradoxEvents.length;
+  }
+
+  /** The last winning run's replay code (M4 dev/e2e), or null. */
+  private lastReplayCode: string | null = null;
+  getLastReplayCode(): string | null {
+    return this.lastReplayCode;
   }
 }

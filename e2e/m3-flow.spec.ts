@@ -119,8 +119,9 @@ test('real keyboard + touch input drives the FTE and menus (no dev hook)', async
     const scale = Math.min(box.width / gameW, box.height / gameH);
     const offX = box.x + (box.width - gameW * scale) / 2;
     const offY = box.y + (box.height - gameH * scale) / 2;
+    // World Map button: startY (height*0.38) + one row (gap 46).
     const bx = offX + 195 * scale;
-    const by = offY + (844 * 0.42 + 58) * scale;
+    const by = offY + (844 * 0.38 + 46) * scale;
     await page.mouse.click(bx, by);
   }
   await page.waitForFunction(() => window.__SQUAD_UI?.scene?.() === 'ui-worldmap', undefined, {
