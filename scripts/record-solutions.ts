@@ -15,21 +15,32 @@ import { dirname, join } from 'node:path';
 import { solveLevel } from '../src/content/solve.js';
 import { serializeRecording } from '../src/sim/index.js';
 import type { ClassId } from '../src/sim/index.js';
-import { ARENA_01 } from '../src/content/index.js';
+import { ARENA_01, CAMPAIGN_LEVELS } from '../src/content/index.js';
+import { ALL_BOTS } from '../src/content/bots.js';
 import type { LevelDef } from '../src/sim/index.js';
+import type { BotController } from '../src/content/bots.js';
 
 interface LevelSolution {
   id: string;
   levelId: string;
   plan: ClassId[];
+  bots?: Record<string, BotController>;
 }
 
 const SOLUTIONS: LevelSolution[] = [
   { id: 'arena-01', levelId: 'arena-01', plan: ['guardian', 'medic', 'ranger'] },
+  // All 19 campaign levels, each with its proven reference plan (section 10).
+  ...CAMPAIGN_LEVELS.map((l) => ({
+    id: l.id,
+    levelId: l.id,
+    plan: [...l.solutionPlan],
+    bots: ALL_BOTS,
+  })),
 ];
 
 const LEVELS: Record<string, LevelDef> = {
   'arena-01': ARENA_01,
+  ...Object.fromEntries(CAMPAIGN_LEVELS.map((l) => [l.id, l.def])),
 };
 
 function main(): void {
@@ -44,7 +55,7 @@ function main(): void {
       console.warn(`record-solutions: unknown level ${sol.levelId}, skipping`);
       continue;
     }
-    const outcome = solveLevel(level, sol.plan);
+    const outcome = sol.bots ? solveLevel(level, sol.plan, sol.bots) : solveLevel(level, sol.plan);
     if (outcome.result !== 'won') {
       throw new Error(`record-solutions: bot failed to solve ${sol.id} (result=${outcome.result})`);
     }
