@@ -39,6 +39,11 @@ export class AudioEngine {
   private nextNoteTime = 0;
   private step = 0; // 16th-note step within the loop
 
+  // Desired 0..1 volumes (from settings). Applied on unlock and on change.
+  private volMaster = 0.6;
+  private volMusic = 0.7;
+  private volSfx = 0.5;
+
   /** True once audio has been unlocked by a user gesture. */
   get isUnlocked(): boolean {
     return this.unlocked;
@@ -52,10 +57,10 @@ export class AudioEngine {
       if (!Ctor) return;
       this.ctx = new Ctor();
       this.master = this.ctx.createGain();
-      this.master.gain.value = 0.6;
+      this.master.gain.value = this.volMaster;
       this.master.connect(this.ctx.destination);
       this.musicBus = this.ctx.createGain();
-      this.musicBus.gain.value = 0.7;
+      this.musicBus.gain.value = this.volMusic;
       this.musicBus.connect(this.master);
       // One gain-controlled layer per class.
       const ids: LayerId[] = ['guardian', 'medic', 'ranger', 'pyromancer', 'rogue', 'engineer', 'avatar'];
@@ -70,6 +75,19 @@ export class AudioEngine {
     } catch {
       this.unlocked = false;
     }
+  }
+
+  /**
+   * Set the 0..1 master / music / sfx volumes (from settings). Safe to call
+   * before unlock; the values are stored and applied when the graph exists.
+   */
+  setVolumes(v: { master: number; music: number; sfx: number }): void {
+    this.volMaster = clamp01(v.master);
+    this.volMusic = clamp01(v.music);
+    this.volSfx = clamp01(v.sfx);
+    if (this.master) this.master.gain.value = this.volMaster;
+    if (this.musicBus) this.musicBus.gain.value = this.volMusic;
+    if (this.sfxGain) this.sfxGain.gain.value = this.volSfx * 0.6;
   }
 
   /** Begin the music scheduler. */
@@ -309,7 +327,7 @@ export class AudioEngine {
     if (!this.ctx || !this.master) return null;
     if (!this.sfxGain) {
       this.sfxGain = this.ctx.createGain();
-      this.sfxGain.gain.value = 0.5;
+      this.sfxGain.gain.value = this.volSfx * 0.6;
       this.sfxGain.connect(this.master);
     }
     return this.sfxGain;
@@ -371,4 +389,10 @@ let engineSingleton: AudioEngine | null = null;
 export function getAudioEngine(): AudioEngine {
   if (!engineSingleton) engineSingleton = new AudioEngine();
   return engineSingleton;
+}
+
+/** Clamp a value to [0,1]. */
+function clamp01(v: number): number {
+  if (!Number.isFinite(v)) return 0;
+  return Math.min(1, Math.max(0, v));
 }

@@ -14,6 +14,24 @@
   "menu.restart": "Restart",
   "menu.quit": "Quit to Map",
   "menu.pause": "Paused",
+  "menu.tapToStart": "Tap or press any key",
+
+  "map.title": "World Map",
+  "map.progress": "{stars} / {max} stars",
+  "map.locked": "Clear the previous mission to unlock.",
+
+  "fte.line1": "You are the last time-keeper. Alone.",
+  "fte.line2": "Loop one: fight the training golem by yourself.",
+  "fte.fail": "You fell. But time can be rewound...",
+  "fte.line3": "Loop two: your past self fights beside you now.",
+  "fte.win": "Two of you. One squad. Welcome, keeper.",
+
+  "replays.title": "Best Replays",
+  "replays.empty": "No replays yet. Win a mission to record one.",
+  "replays.entry": "{level} · {stars}★ · loop {slot}",
+
+  "credits.roster": "Enemies, bosses and worlds handcrafted for this build.",
+  "credits.cc0": "All art and audio are generated in-engine (CC0).",
 
   "common.close": "Close",
   "common.confirm": "Confirm",

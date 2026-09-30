@@ -31,7 +31,7 @@ import {
   CONVERGENCE_CHARGE,
 } from '@sim/index.js';
 import type { SimState, Unit, ClassId, ParadoxEvent } from '@sim/index.js';
-import { ARENA_02, CLASS_PRESENTATION } from '@content/index.js';
+import { ARENA_02, CLASS_PRESENTATION, campaignLevelById } from '@content/index.js';
 import type { LevelDef } from '@sim/index.js';
 import { createInputController, type InputController } from '../input.js';
 import { COLORS } from '../render/colors.js';
@@ -97,6 +97,22 @@ export class GameScene extends Phaser.Scene {
   constructor() {
     super({ key: 'GameScene' });
   }
+
+  /** Whether this run was launched from the UI (route results to ResultsScene). */
+  private fromUi = false;
+
+  init(data: { levelId?: string; from?: string }): void {
+    this.fromUi = data.from !== undefined;
+    if (data.levelId) {
+      const lvl = campaignLevelById(data.levelId);
+      if (lvl) {
+        this.level = lvl.def;
+        this.campaignLevelId = data.levelId;
+      }
+    }
+  }
+
+  private campaignLevelId: string | null = null;
 
   create(): void {
     this.cameras.main.setBackgroundColor(COLORS.bg);
@@ -553,8 +569,28 @@ export class GameScene extends Phaser.Scene {
 
   private showResult(result: string): void {
     this.phase = 'result';
-    this.clearOverlay();
     const stars = this.runner.computeStars();
+
+    // When launched from the UI, hand off to the localized ResultsScene which
+    // records the outcome into the save + offers Next/Retry/Map.
+    if (this.fromUi && this.campaignLevelId) {
+      const lastSlot = this.runner.recordingSlot;
+      const cls = this.runner.slotClasses[lastSlot] ?? null;
+      this.scene.start('ui-results', {
+        levelId: this.campaignLevelId,
+        won: result === 'won',
+        stars: stars.count,
+        echoesAlive: stars.echoesAlive,
+        earlyVictory: stars.earlyVictory,
+        rewritesUsed: stars.rewritesUsed,
+        assistUsed: false,
+        wonOnSlot: this.runner.wonOnSlot,
+        masteryClass: cls,
+      });
+      return;
+    }
+
+    this.clearOverlay();
     const cx = this.scale.width / 2;
     if (result === 'won') {
       this.banner.setText('VICTORY');
