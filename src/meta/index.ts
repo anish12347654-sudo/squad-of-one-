@@ -8,3 +8,4 @@ export * from './economy.js';
 export * from './cosmetics.js';
 export * from './monetization.js';
 export * from './save.js';
+export * from './progression.js';

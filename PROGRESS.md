@@ -73,18 +73,54 @@ inspected.
 - [x] `npm run lint`, `typecheck`, `test`, `build`, `e2e` all green; headless Playwright plays the full 7-slot flow with a deliberate paradox, a rewrite and a Convergence finish; screenshots (scrubber/paradox/convergence/victory/final) captured + inspected, zero console errors
 - [x] Git commit for M2
 
-## M2b - Content & classes (later)
+## M3 - Content & meta (in progress)
 
-- [ ] Enemies + additional bosses (data + patterns)
-- [ ] More levels (tutorial + early bosses); level-solution tests per level
+Delivered in this milestone so far (all gates green: lint/typecheck/test/build):
 
-## M3 - Meta, UI, platform
+- [x] Meta layer (`src/meta`): economy (XP/levels, per-class mastery, Chrono
+      Shards), cosmetics catalog (trails/skins/banners, cosmetic-only), monetization
+      adapter (feature-flagged OFF, no-op, cosmetic-only product kind), versioned
+      saves (v3) with a real migration chain + normalize/hardening, export/import
+      code, and gameplay-flow mutations. Unit-tested (save-migration, economy).
+- [x] Progression/unlock gates (`src/meta/progression.ts`): linear level gate,
+      class unlock ramp, star totals, continue/next, completion. Unit-tested.
+- [x] Platform (`src/platform`): localStorage persistence with migration on load
+      + in-memory fallback, base64 export/import, `navigator.vibrate` haptics.
+- [x] i18n (`src/i18n`): en + hi (Devanagari) JSON tables, `t()` with
+      interpolation + fallback, locale/font selection. Parity + no-hard-coded-
+      strings tests. NO hard-coded UI strings.
+- [x] Fonts: SUBSETTED OFL Noto Sans + Noto Sans Devanagari in `public/fonts`
+      (~47 KB total), @font-face in index.html, coverage-checked, credited in
+      docs/CREDITS.md + OFL.txt. `npm run gen:fonts` downloads + re-subsets.
+- [x] Campaign: 19 handcrafted levels as typed data (`src/content`), worlds
+      (palette/hazard/musical-scale/boss-intro), unlock ramp, story keys, four
+      boss archetypes as deterministic phase-gated pattern scripts (Pendulum
+      Knight / Mirage Djinn / Stasis Wyrm / The Unwinder). Objective types tagged
+      (boss/survive/heist/build).
+- [x] Solvability: recorded solution replay for EVERY level
+      (`npm run record:solutions`); the tests/solutions gate asserts each of the
+      19 levels wins with >= 1 star both live and via its recorded replay; first
+      three levels first-time winnable. Boss HP tuned via `scripts/calibrate.ts`.
 
-- [ ] Progression/economy, save + migrations (`src/meta`)
-- [ ] UI: menus, HUD, results (`src/ui`), first-time experience
-- [ ] Touch + keyboard input -> InputFrame (`src/game`)
-- [ ] Platform adapters (storage/share/haptics/PWA, no-op ads+analytics, Playables)
-- [ ] i18n scaffolding + fonts (Noto Sans + Noto Sans Devanagari)
+Remaining for M3 (next coder pass - NOT yet done; do not mark M3 complete):
+
+- [ ] UI menu suite (`src/ui`): title, world map, level intro, class picker +
+      scrubber, results with stars, shop, settings, replays, credits, pause -
+      wired to meta/i18n (all strings via `t()`).
+- [ ] First-time experience: open into gameplay, loop-1-fail vs training golem ->
+      rewind -> loop-2-with-echo "aha" within 60 s.
+- [ ] Settings + accessibility UI (volume sliders, shake/flash toggles,
+      colour-blind identity = shape+number, text size, left-handed, haptics,
+      Assist Mode 0.8x marked on stars) wired to the save.
+- [ ] Full enemy roster as SIM mechanics: 6+ minion types (chaser/caster/bomber/
+      shielded/healer/splitter) with telegraphs, and the SIM side of the
+      survive/heist-doors+plates/build-pads objective types. Deferred because
+      these are new PURE-sim systems that must extend the frozen contract
+      additively and be re-verified for determinism; authored as typed data +
+      pattern scripts once the sim primitives land.
+- [ ] E2E gate: boot -> FTE -> finish Tutorial 1 -> results, zero console errors
+      (dev hook + one real keyboard/touch test); screenshots at 390x844, 844x390,
+      768x1024, 1920x1080, inspected for overlap/clipping/contrast.
 
 ## M4 - Modes & polish
 
