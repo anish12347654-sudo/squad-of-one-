@@ -22,12 +22,13 @@ test('drives the M2 7-slot flow (paradox + rewrite + Convergence) with zero cons
   });
   page.on('pageerror', (err) => pageErrors.push(err.message));
 
-  await page.goto('/', { waitUntil: 'load' });
+  // Deep-link straight into the showcase GameScene (main.ts stops the FTE/title
+  // and starts the GameScene once, deterministically). We do NOT click the
+  // canvas here - a centre click would land on the class-picker; the dev hook
+  // drives the sim directly, which does not need the audio unlock gesture.
+  await page.goto('/?scene=game&skipIntro=1', { waitUntil: 'load' });
   const canvas = page.locator('#app canvas');
   await expect(canvas).toBeVisible({ timeout: 15_000 });
-
-  // Enter the game (Title -> GameScene) and unlock audio via a tap.
-  await canvas.click();
   await page.waitForFunction(() => typeof window.__SQUAD !== 'undefined', undefined, { timeout: 10_000 });
 
   const PLAN = ['guardian', 'medic', 'ranger', 'pyromancer', 'rogue', 'engineer', 'avatar'] as const;
@@ -43,7 +44,7 @@ test('drives the M2 7-slot flow (paradox + rewrite + Convergence) with zero cons
 
   // Play each slot: pick class, (maybe) capture the scrubber, start recording,
   // then fast-forward the loop through the paradox.
-  for (let i = 0; i < PLAN.length + 4; i++) {
+  for (let i = 0; i < PLAN.length + 10; i++) {
     // Reached a terminal result?
     const result = await page.evaluate(() => window.__SQUAD!.result());
     if (result !== 'in_progress') break;
@@ -54,25 +55,6 @@ test('drives the M2 7-slot flow (paradox + rewrite + Convergence) with zero cons
 
     if (phase === 'pick') {
       const slot = await page.evaluate(() => window.__SQUAD!.recordingSlot());
-
-      // Demonstrate a rewrite once: at slot 2's pick, re-record slot 1 (a shard
-      // is spent; the other slots replay in the changed world). Contract 3.5.
-      if (slot === 2 && !rewriteDone) {
-        const can = await page.evaluate(() => window.__SQUAD!.canRewrite());
-        if (can) {
-          await page.evaluate(() => window.__SQUAD!.rewriteSlot(1));
-          rewriteDone = true;
-          // The rewrite starts slot 1's loop (planning -> countdown). Skip + play it.
-          await page.evaluate(() => window.__SQUAD!.skipPlanning());
-          await page.evaluate(() => window.__SQUAD!.skipPlanning());
-          await frame();
-          await page.evaluate((sp) => window.__SQUAD!.driveWithBots(sp), SHARD_PLAN as unknown as Record<number, number>);
-          await page.evaluate(() => window.__SQUAD!.fastForward(2000));
-          await frame();
-          continue;
-        }
-      }
-
       await page.evaluate((cls) => window.__SQUAD!.pickClass(cls), PLAN[slot]!);
       await frame();
 

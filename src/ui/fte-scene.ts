@@ -79,6 +79,15 @@ export class FirstTimeExperienceScene extends Phaser.Scene {
   }
 
   create(): void {
+    // A dev/e2e deep-link (?scene= or ?level=) takes over routing in main.ts;
+    // the FTE must not also start the title menu (which would run two scenes).
+    if (typeof window !== 'undefined') {
+      const q = new URLSearchParams(window.location.search);
+      if (q.get('scene') || q.get('level')) {
+        this.scene.stop();
+        return;
+      }
+    }
     // Returning players skip straight to the menu.
     if (getSave().seenIntro) {
       this.scene.start('ui-title');

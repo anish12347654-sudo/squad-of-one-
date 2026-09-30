@@ -1,16 +1,18 @@
 /**
  * WorldMapScene (brief section 6.1): the campaign map with per-level stars and
- * linear unlock gates, grouped by world. Selecting an unlocked level opens the
- * Level Intro (story + objective + boss title card). Reads progression from the
- * save; all text is localized.
+ * linear unlock gates, grouped by world. Each world is a row of compact level
+ * nodes; selecting an unlocked node opens the Level Intro. Reads progression
+ * from the save; all text is localized. The compact node layout fits all 19
+ * levels + 5 worlds on every target viewport (portrait, landscape, tablet).
  */
 
 import Phaser from 'phaser';
 import { getAudioEngine } from '@audio/audio-engine.js';
 import { getSave } from './save-context.js';
-import { label, button, drawStars, panel, UI_COLORS } from './ui-kit.js';
+import { label, button, starPath, UI_COLORS } from './ui-kit.js';
 import { CAMPAIGN_LEVELS, WORLDS } from '@content/index.js';
 import { levelStatuses, totalStars, maxStars } from '@meta/index.js';
+import type { LevelStatus } from '@meta/index.js';
 
 export const SCENE_WORLDMAP = 'ui-worldmap';
 
@@ -27,73 +29,93 @@ export class WorldMapScene extends Phaser.Scene {
     const save = getSave();
     const statuses = levelStatuses(save, CAMPAIGN_LEVELS);
 
-    label(this, cx, 40, 'map.title', { size: 26, bold: true, name: 'map-title' });
-    label(this, cx, 70, 'map.progress', {
-      size: 14,
+    label(this, cx, 32, 'map.title', { size: 24, bold: true, name: 'map-title' });
+    label(this, cx, 58, 'map.progress', {
+      size: 13,
       color: UI_COLORS.accent2Text,
       params: { stars: totalStars(save, CAMPAIGN_LEVELS), max: maxStars(CAMPAIGN_LEVELS) },
     });
 
-    // Scrollable content is unnecessary at these counts; lay out compactly.
-    const marginTop = 100;
-    const rowH = 34;
-    const worldGap = 14;
-    let y = marginTop;
-    const listW = Math.min(360, width - 30);
+    const worlds = WORLDS.filter((w) => CAMPAIGN_LEVELS.some((l) => l.worldId === w.id));
+    const top = 84;
+    const bottom = height - 70;
+    const rowH = Math.min(92, (bottom - top) / worlds.length);
+    const listW = Math.min(720, width - 30);
     const listX = cx - listW / 2;
+    const node = Math.min(46, rowH * 0.5);
 
-    for (const world of WORLDS) {
+    worlds.forEach((world, wi) => {
       const levels = CAMPAIGN_LEVELS.filter((l) => l.worldId === world.id);
-      if (levels.length === 0) continue;
-      // World header bar.
+      const y = top + wi * rowH;
+      // World header.
       const hg = this.add.graphics();
-      hg.fillStyle(world.palette.accent, 0.18);
-      hg.fillRoundedRect(listX, y - 12, listW, 24, 6);
-      label(this, listX + 12, y, world.nameKey, { size: 14, bold: true, origin: 0, align: 'left' });
-      y += 26;
+      hg.fillStyle(world.palette.accent, 0.2);
+      hg.fillRoundedRect(listX, y, listW, 20, 5);
+      label(this, listX + 10, y + 10, world.nameKey, { size: 12, bold: true, origin: 0, align: 'left' });
 
-      for (const lvl of levels) {
+      // Level nodes laid out left-to-right.
+      const gap = 8;
+      const nx0 = listX + 6;
+      const nodeRowY = y + 24 + node / 2 + 6;
+      levels.forEach((lvl, li) => {
         const st = statuses.find((s) => s.id === lvl.id)!;
-        const rowY = y;
-        panel(this, listX, rowY - rowH / 2 + 2, listW, rowH - 6, st.unlocked ? UI_COLORS.panel : 0x121626);
+        const nx = nx0 + li * (node + gap) + node / 2;
+        this.drawNode(nx, nodeRowY, node, lvl.id, world.palette.accent, st);
+      });
+    });
 
-        if (st.unlocked) {
-          label(this, listX + 12, rowY, lvl.nameKey, { size: 13, origin: 0, align: 'left' });
-          label(this, listX + 12, rowY + 12, `level.objective.${lvl.objective}`, {
-            size: 9,
-            color: UI_COLORS.textDim,
-            origin: 0,
-            align: 'left',
-          });
-          drawStars(this, listX + listW - 60, rowY, st.bestStars, 3, 7, 4);
-          const zone = this.add
-            .zone(listX + listW / 2, rowY, listW, rowH)
-            .setOrigin(0.5)
-            .setInteractive({ useHandCursor: true });
-          zone.on('pointerdown', () => this.openLevel(lvl.id));
-        } else {
-          label(this, listX + 12, rowY, 'common.locked', {
-            size: 12,
-            color: UI_COLORS.textDim,
-            origin: 0,
-            align: 'left',
-          });
-          // Padlock as a small vector rectangle (no glyph).
-          const lock = this.add.graphics();
-          lock.fillStyle(UI_COLORS.panelEdge, 1);
-          lock.fillRoundedRect(listX + listW - 30, rowY - 6, 12, 12, 3);
-        }
-        y += rowH;
-      }
-      y += worldGap;
-    }
-
-    button(this, cx, height - 34, 200, 42, 'menu.back', () => {
+    button(this, cx, height - 34, 200, 40, 'menu.back', () => {
       getAudioEngine().sfx('ui');
       this.scene.start('ui-title');
     });
 
     this.game.events.emit('worldmap-ready');
+  }
+
+  /** A single level node: rounded square, star pips, lock when unavailable. */
+  private drawNode(
+    cx: number,
+    cy: number,
+    size: number,
+    levelId: string,
+    accent: number,
+    st: LevelStatus,
+  ): void {
+    const g = this.add.graphics();
+    const half = size / 2;
+    g.fillStyle(st.unlocked ? UI_COLORS.panel : 0x121626, 1);
+    g.lineStyle(2, st.unlocked ? accent : UI_COLORS.panelEdge, 1);
+    g.fillRoundedRect(cx - half, cy - half, size, size, 8);
+    g.strokeRoundedRect(cx - half, cy - half, size, size, 8);
+
+    if (st.unlocked) {
+      // Three star pips across the bottom of the node.
+      const r = size * 0.11;
+      const spacing = size * 0.26;
+      for (let i = 0; i < 3; i++) {
+        const px = cx - spacing + i * spacing;
+        const py = cy + half - r - 4;
+        g.fillStyle(i < st.bestStars ? UI_COLORS.gold : UI_COLORS.goldEmpty, 1);
+        starPath(g, px, py, r, r * 0.45);
+        g.fillPath();
+      }
+      // Level index number near the top of the node.
+      label(this, cx, cy - half * 0.4, 'map.node', {
+        size: 12,
+        bold: true,
+        params: { n: st.index + 1 },
+      });
+      const zone = this.add.zone(cx, cy, size, size).setOrigin(0.5).setInteractive({ useHandCursor: true });
+      zone.on('pointerdown', () => this.openLevel(levelId));
+    } else {
+      // Padlock: a small rounded body + shackle arc.
+      g.fillStyle(UI_COLORS.panelEdge, 1);
+      g.fillRoundedRect(cx - 6, cy - 2, 12, 10, 2);
+      g.lineStyle(2, UI_COLORS.panelEdge, 1);
+      g.beginPath();
+      g.arc(cx, cy - 2, 5, Math.PI, 0, false);
+      g.strokePath();
+    }
   }
 
   private openLevel(levelId: string): void {

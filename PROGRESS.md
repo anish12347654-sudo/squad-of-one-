@@ -73,7 +73,7 @@ inspected.
 - [x] `npm run lint`, `typecheck`, `test`, `build`, `e2e` all green; headless Playwright plays the full 7-slot flow with a deliberate paradox, a rewrite and a Convergence finish; screenshots (scrubber/paradox/convergence/victory/final) captured + inspected, zero console errors
 - [x] Git commit for M2
 
-## M3 - Content & meta (in progress)
+## M3 - Content & meta ✅ (complete)
 
 Delivered in this milestone so far (all gates green: lint/typecheck/test/build):
 
@@ -102,25 +102,30 @@ Delivered in this milestone so far (all gates green: lint/typecheck/test/build):
       19 levels wins with >= 1 star both live and via its recorded replay; first
       three levels first-time winnable. Boss HP tuned via `scripts/calibrate.ts`.
 
-Remaining for M3 (next coder pass - NOT yet done; do not mark M3 complete):
+Completed in the M3 continuation (all gates green: lint/typecheck/test(172)/build/e2e):
 
-- [ ] UI menu suite (`src/ui`): title, world map, level intro, class picker +
-      scrubber, results with stars, shop, settings, replays, credits, pause -
-      wired to meta/i18n (all strings via `t()`).
-- [ ] First-time experience: open into gameplay, loop-1-fail vs training golem ->
-      rewind -> loop-2-with-echo "aha" within 60 s.
-- [ ] Settings + accessibility UI (volume sliders, shake/flash toggles,
-      colour-blind identity = shape+number, text size, left-handed, haptics,
-      Assist Mode 0.8x marked on stars) wired to the save.
-- [ ] Full enemy roster as SIM mechanics: 6+ minion types (chaser/caster/bomber/
-      shielded/healer/splitter) with telegraphs, and the SIM side of the
-      survive/heist-doors+plates/build-pads objective types. Deferred because
-      these are new PURE-sim systems that must extend the frozen contract
-      additively and be re-verified for determinism; authored as typed data +
-      pattern scripts once the sim primitives land.
-- [ ] E2E gate: boot -> FTE -> finish Tutorial 1 -> results, zero console errors
-      (dev hook + one real keyboard/touch test); screenshots at 390x844, 844x390,
-      768x1024, 1920x1080, inspected for overlap/clipping/contrast.
+- [x] UI menu suite (`src/ui`): title, world map (stars + unlock gates), level
+      intro + boss/story title card, class picker + scrubber (in GameScene),
+      results with vector stars, cosmetic shop (buy/equip via meta/cosmetics),
+      settings + accessibility, replays (StoredReplay list), credits, pause -
+      all wired to meta/i18n, every string via `t()` (no-hard-coded test passes).
+- [x] First-time experience: opens straight into a training-golem encounter;
+      loop 1 alone falls short -> rewind -> loop 2 with your echo beside you wins.
+      The "aha" lands in ~12 s (< 60). Gated by `SaveGame.seenIntro`.
+- [x] Settings + accessibility wired to the save and applied live: volume sliders,
+      screen shake, reduced flashing, colour-blind-safe identity (shape+number),
+      text size, left-handed, haptics (navigator.vibrate), Assist Mode (0.8x,
+      marked on stars via LevelRecord.assistUsed). Save export/import codes.
+- [x] Full enemy roster as PURE-sim mechanics: 6 minion archetypes
+      (chaser/caster/bomber/shielded/healer/splitter) with telegraphs, added
+      additively (new `kind:'minion'` + `enemyKind`, deterministic AI). Real
+      objective SIM mechanics: survive-to-timeout / protect-the-core, Time-Core
+      heist (grab + carry to goal through plate-gated doors), build & cross
+      (Engineer build pads). Determinism re-verified (per-tick FNV-1a parity +
+      presim worker/main parity); all 19 solution replays re-recorded.
+- [x] E2E gate: boot -> FTE -> finish Tutorial 1 -> localized results, zero
+      console errors (dev hook + a real keyboard+touch test); screenshots of
+      every screen at 390x844, 844x390, 768x1024, 1920x1080 captured + inspected.
 
 ## M4 - Modes & polish
 

@@ -500,7 +500,7 @@ export const step: StepFn = (state, liveInput) => {
   updateObjectiveMechanics(state);
 
   // 5) Cull dead projectiles/attacks/turrets, and split dying splitters.
-  handleMinionDeaths(state);
+  if (state.units.some((u) => u.kind === 'minion')) handleMinionDeaths(state);
   state.projectiles = state.projectiles.filter((p) => p.life > 0);
   state.attacks = state.attacks.filter((a) => a.telegraphTicks > 0 || a.activeTicks > 0);
   state.turrets = state.turrets.filter((t) => t.life > 0 && t.hp > 0);

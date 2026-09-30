@@ -19,6 +19,7 @@ import { ReplaysScene } from '@ui/replays-scene.js';
 import { CreditsScene } from '@ui/credits-scene.js';
 import { PauseScene } from '@ui/pause-scene.js';
 import { ResultsScene } from '@ui/results-scene.js';
+import { installUiDevHook } from '@ui/ui-dev-hook.js';
 
 export const GAME_WIDTH = 390;
 export const GAME_HEIGHT = 844;
@@ -58,5 +59,7 @@ export function createGame(parent: HTMLElement | string): Phaser.Game {
 
   // The FTE scene is first in the array and auto-starts; it self-routes to the
   // title menu immediately when seenIntro is already set.
-  return new Phaser.Game(config);
+  const game = new Phaser.Game(config);
+  installUiDevHook(game);
+  return game;
 }

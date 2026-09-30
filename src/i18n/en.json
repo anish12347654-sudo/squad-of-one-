@@ -19,6 +19,7 @@
   "map.title": "World Map",
   "map.progress": "{stars} / {max} stars",
   "map.locked": "Clear the previous mission to unlock.",
+  "map.node": "{n}",
 
   "fte.line1": "You are the last time-keeper. Alone.",
   "fte.line2": "Loop one: fight the training golem by yourself.",
