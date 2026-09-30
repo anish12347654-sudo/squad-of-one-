@@ -22,6 +22,7 @@ import {
   setEchoInputs,
   setEchoRecordings,
   setBossPattern,
+  setLevelMinions,
   type EchoRecordingMeta,
 } from './sim.js';
 import {
@@ -83,8 +84,14 @@ export class LevelRunner {
     this.level = level;
     this.slotClasses = new Array(level.slotCount).fill(null);
     this.recordings = new Array(level.slotCount).fill(null);
-    setBossPattern(level.boss.pattern);
+    this.setLevelScripts();
     this.state = createLevelState(level, this.recordingSlot, this.slotClasses, false);
+  }
+
+  /** Install this level's boss pattern + minion schedule into the sim. */
+  private setLevelScripts(): void {
+    setBossPattern(this.level.boss.pattern);
+    setLevelMinions(this.level.minions ?? []);
   }
 
   /** Is this level's last slot? (Avatar must be the last slot when used.) */
@@ -122,7 +129,7 @@ export class LevelRunner {
     }
     this.slotClasses[this.recordingSlot] = classId;
     this.recorder = createRecorder(classId);
-    setBossPattern(this.level.boss.pattern);
+    this.setLevelScripts();
     this.state = createLevelState(this.level, this.recordingSlot, this.slotClasses, true);
     this.refreshEchoRecMeta();
   }
@@ -323,7 +330,7 @@ export class LevelRunner {
     this.recordings[slot] = null;
     const cls = this.slotClasses[slot] as ClassId;
     this.recorder = createRecorder(cls);
-    setBossPattern(this.level.boss.pattern);
+    this.setLevelScripts();
     this.state = createLevelState(this.level, this.recordingSlot, this.slotClasses, true);
     this.refreshEchoRecMeta();
   }

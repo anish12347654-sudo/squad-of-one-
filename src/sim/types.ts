@@ -65,7 +65,26 @@ export type ClassId =
   | 'avatar';
 
 /** Kind discriminator for entities. FROZEN (later kinds are additive). */
-export type EntityKind = 'player' | 'echo' | 'boss' | 'projectile';
+export type EntityKind = 'player' | 'echo' | 'boss' | 'projectile' | 'minion';
+
+/**
+ * Non-boss enemy archetypes (brief section 5). M3 additive. Each has a clear,
+ * deterministic telegraph and is authored as typed data in src/content. The
+ * generic minion AI in the sim (updateMinion) reacts to `enemyKind`.
+ *   - chaser:   sprints at the current threat target and melees on contact.
+ *   - caster:   stands off and lobs a telegraphed slow bolt.
+ *   - bomber:   charges the target then detonates in an AoE (telegraphed).
+ *   - shielded: chaser with a frontal shield that must be flanked / broken.
+ *   - healer:   keeps its distance and heals wounded enemies (incl. the boss).
+ *   - splitter: on death spawns two smaller splitters (once).
+ */
+export type EnemyKind =
+  | 'chaser'
+  | 'caster'
+  | 'bomber'
+  | 'shielded'
+  | 'healer'
+  | 'splitter';
 
 /** Which side an entity fights for. Player-team never body-collides. FROZEN. */
 export type Team = 'player' | 'enemy';
@@ -139,6 +158,31 @@ export interface Unit {
   convergeFireTicks: number;
   /** Cached count of alive non-paradox echoes (Avatar passive scaling), per tick. */
   allyBuffCount: number;
+
+  // --- M3 additive fields (minion roster; default 0/null for players/bosses) --
+  /** Enemy archetype for a `minion` unit; null for players/echoes/boss. */
+  enemyKind: EnemyKind | null;
+  /**
+   * Generic enemy attack cooldown / telegraph timer (ticks). Minions wind up an
+   * attack for `telegraphTotal` ticks (counting `attackTelegraph` down to 0),
+   * fire, then wait `attackCd`. Shared, deterministic, hashed.
+   */
+  attackCd: number;
+  attackTelegraph: number;
+  /** The telegraph length for the current wind-up (so the renderer can ratio). */
+  telegraphTotal: number;
+  /** Frontal shield HP for a `shielded` minion (absorbs front-facing damage). */
+  shieldHp: number;
+  /** Generation of a `splitter` (0 = original, 1 = spawned child; children don't split). */
+  splitGen: number;
+  /** Movement speed override for minions (u/s); 0 falls back to a default. */
+  moveSpeed: number;
+  /** Contact/melee/explosion damage for a minion. */
+  contactDamage: number;
+  /** Heal-per-tick for a `healer` minion. */
+  healPower: number;
+  /** Carried Time-Core defIndex for a heist carrier (-1 = not carrying). */
+  carryingCore: number;
 }
 
 /** A lightweight projectile (arrows, etc.). FROZEN (M2 adds optional fields). */
@@ -301,6 +345,15 @@ export interface SimState {
    * for the floating text + timeline marker. Presentation reads these.
    */
   paradoxEvents: ParadoxEvent[];
+
+  // --- M3 additive fields (enemy roster + objectives) ---
+  /**
+   * Objective the loop is judged by. 'boss' (default) wins when the boss dies;
+   * 'survive' wins at loopLength if the protected core (if any) is alive;
+   * 'heist' wins when all cores reach their goal zones; 'build' wins when every
+   * build pad is completed. Content-authored; the sim reads it in step().
+   */
+  objective: SimObjective;
 }
 
 /**
@@ -317,7 +370,7 @@ export interface Interactable {
    * at the same conceptual object in a later, rewritten loop.
    */
   defIndex: number;
-  kind: 'shard' | 'lever';
+  kind: InteractableKind;
   x: number;
   y: number;
   radius: number;
@@ -327,7 +380,46 @@ export interface Interactable {
   takenBySlot: number;
   /** Tick it was taken at (-1 if not yet). */
   takenAtTick: number;
+
+  // --- M3 additive interactable fields (objective mechanics) ---
+  /**
+   * For a `plate`: true while a player-team unit stands on it (reacts to
+   * presence, re-evaluated every tick). For a `door`: true while OPEN. For a
+   * `buildpad`: true once BUILT. For a `core`: true while the core is intact.
+   */
+  active: boolean;
+  /**
+   * defIndex of a plate/lever this object is linked to (a `door` opens while
+   * its linked plate is pressed or its linked lever is flipped). -1 = none.
+   */
+  linkedTo: number;
+  /**
+   * For a `core`: HP remaining (Protect-the-Core objective). For a `buildpad`:
+   * build progress in ticks (fills while a unit stands on it, up to
+   * `buildNeeded`). Ignored for other kinds.
+   */
+  hp: number;
+  /** For a `buildpad`: ticks of standing needed to complete the build. */
+  buildNeeded: number;
+  /** For a `core`/heist goal: the target zone a carried core must reach. */
+  goalX: number;
+  goalY: number;
 }
+
+/**
+ * Interactable kinds. `shard`/`lever` are the M2 anchor primitives. M3 adds the
+ * objective-mechanics kinds additively:
+ *   - plate:    a pressure plate that is `active` while a unit stands on it.
+ *   - door:     a barrier that blocks movement while closed; opens when its
+ *               linked plate/lever is active.
+ *   - buildpad: an Engineer build pad; fills while stood on, then becomes a
+ *               passable bridge tile (Build & Cross).
+ *   - core:     a Time-Core: carried in a heist, or defended in Protect-the-Core.
+ */
+export type InteractableKind = 'shard' | 'lever' | 'plate' | 'door' | 'buildpad' | 'core';
+
+/** Objective type simulated by the sim (win condition). M3 additive. FROZEN-compatible. */
+export type SimObjective = 'boss' | 'survive' | 'heist' | 'build';
 
 /** Why an echo became a paradox (for floating text + timeline markers). */
 export type ParadoxCause = 'anchor-broken' | 'path-diverged';

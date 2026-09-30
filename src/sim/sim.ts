@@ -56,6 +56,24 @@ import {
   PARADOX_DIVERGE_TICKS,
   PARADOX_TELEGRAPH_TICKS,
   PARADOX_AGGRO_RANGE,
+  MINION_RADIUS,
+  CORE_DEFAULT_HP,
+  MINION_MELEE_TELEGRAPH,
+  MINION_MELEE_CD,
+  MINION_MELEE_RANGE,
+  CASTER_STANDOFF,
+  CASTER_TELEGRAPH,
+  CASTER_CD,
+  CASTER_BOLT_SPEED,
+  CASTER_BOLT_RANGE,
+  BOMBER_TELEGRAPH,
+  BOMBER_AOE_RADIUS,
+  BOMBER_TRIGGER_RANGE,
+  HEALER_STANDOFF,
+  HEALER_RANGE,
+  HEALER_CD,
+  SPLITTER_CHILDREN,
+  SPLITTER_CHILD_HP_FRACTION,
 } from './classes.js';
 import {
   addDamageThreat,
@@ -126,6 +144,16 @@ function makeUnit(id: number, kind: Unit['kind'], team: Unit['team'], slot: numb
     convergeCharge: 0,
     convergeFireTicks: 0,
     allyBuffCount: 0,
+    enemyKind: null,
+    attackCd: 0,
+    attackTelegraph: 0,
+    telegraphTotal: 0,
+    shieldHp: 0,
+    splitGen: 0,
+    moveSpeed: 0,
+    contactDamage: 0,
+    healPower: 0,
+    carryingCore: -1,
   };
 }
 
@@ -171,11 +199,13 @@ export function createLevelState(
     turrets: [],
     interactables: [],
     paradoxEvents: [],
+    objective: level.objective ?? 'boss',
   };
 
-  // Interactables (Time Shards / levers) are placed by the level, if any.
+  // Interactables (Time Shards / levers / plates / doors / build pads / cores).
   if (level.interactables) {
     level.interactables.forEach((it, idx) => {
+      const isCore = it.kind === 'core';
       state.interactables.push({
         id: state.nextId++,
         defIndex: idx,
@@ -186,6 +216,12 @@ export function createLevelState(
         taken: false,
         takenBySlot: -1,
         takenAtTick: -1,
+        active: it.kind === 'core' ? true : false,
+        linkedTo: it.linkedTo ?? -1,
+        hp: isCore ? (it.hp ?? CORE_DEFAULT_HP) : 0,
+        buildNeeded: it.buildNeeded ?? 0,
+        goalX: it.goalX ?? it.x,
+        goalY: it.goalY ?? it.y,
       });
     });
   }
@@ -258,6 +294,7 @@ export function createSimState(seed: number): SimState {
     turrets: [],
     interactables: [],
     paradoxEvents: [],
+    objective: 'boss',
   };
   const boss = makeUnit(state.nextId++, 'boss', 'enemy', -1);
   boss.x = 0;
@@ -330,6 +367,7 @@ export function cloneSimState(state: SimState): SimState {
     turrets: state.turrets.map((t) => ({ ...t })),
     interactables: state.interactables.map((i) => ({ ...i })),
     paradoxEvents: state.paradoxEvents.map((e) => ({ ...e })),
+    objective: state.objective,
   };
 }
 
@@ -405,6 +443,10 @@ export const step: StepFn = (state, liveInput) => {
 
   const bossUnit = findBoss(state);
 
+  // M3: spawn any scheduled minions for this tick + update plate presence.
+  spawnScheduledMinions(state);
+  updatePresencePlates(state);
+
   // Build the broad-phase hash of player-team units for range queries.
   const hash = createSpatialHash(HASH_CELL);
   clearSpatialHash(hash);
@@ -443,27 +485,86 @@ export const step: StepFn = (state, liveInput) => {
   // 3) Projectiles advance and resolve hits (now team-aware for paradox).
   updateProjectiles(state, bossUnit);
 
+  // 3b) Minions (non-boss enemies) act after projectiles, before the boss, in
+  // stable id order. Deterministic generic AI reacts to enemyKind.
+  updateMinions(state, bossUnit);
+
   // 4) Boss brain: targeting + pattern script + resolve landed attacks.
   if (bossUnit && bossUnit.alive) {
     updateBoss(state, bossUnit);
   }
   updateAttacks(state);
 
-  // 5) Cull dead projectiles/attacks/turrets.
+  // 4b) M3 objective mechanics: build pads fill, cores get carried to goals,
+  // core HP is defended, doors open with linked plates/levers.
+  updateObjectiveMechanics(state);
+
+  // 5) Cull dead projectiles/attacks/turrets, and split dying splitters.
+  handleMinionDeaths(state);
   state.projectiles = state.projectiles.filter((p) => p.life > 0);
   state.attacks = state.attacks.filter((a) => a.telegraphTicks > 0 || a.activeTicks > 0);
   state.turrets = state.turrets.filter((t) => t.life > 0 && t.hp > 0);
 
-  // 6) Win / lose evaluation.
-  if (bossUnit && !bossUnit.alive) {
-    state.outcome = 'won';
-  } else if (state.tick + 1 >= state.loopLength) {
-    state.outcome = 'timeout';
-  }
+  // 6) Win / lose evaluation - objective-aware (M3).
+  evaluateOutcome(state, bossUnit);
 
   state.tick += 1;
   return state;
 };
+
+// ---------------------------------------------------------------------------
+// M3 objective-aware outcome evaluation
+// ---------------------------------------------------------------------------
+
+/**
+ * Decide the loop outcome for the current objective. 'boss' (default) wins when
+ * the boss dies. 'survive' wins at loopLength if every protected core is alive.
+ * 'heist' wins when every core has reached its goal. 'build' wins when every
+ * build pad is complete. A destroyed protected core fails the survive loop
+ * (timeout with a dead core is not a win). Timeout otherwise.
+ */
+function evaluateOutcome(state: SimState, boss: Unit | undefined): void {
+  const obj = state.objective;
+  const atEnd = state.tick + 1 >= state.loopLength;
+  if (obj === 'boss') {
+    if (boss && !boss.alive) state.outcome = 'won';
+    else if (atEnd) state.outcome = 'timeout';
+    return;
+  }
+  if (obj === 'heist') {
+    const cores = state.interactables.filter((i) => i.kind === 'core');
+    const doors = state.interactables.filter((i) => i.kind === 'door');
+    // Every core must be delivered while every gating door stands open.
+    const delivered = cores.length > 0 && cores.every((c) => c.active && coreAtGoal(c));
+    const doorsOpen = doors.every((d) => d.active);
+    if (delivered && doorsOpen) state.outcome = 'won';
+    else if (atEnd) state.outcome = 'timeout';
+    return;
+  }
+  if (obj === 'build') {
+    const pads = state.interactables.filter((i) => i.kind === 'buildpad');
+    if (pads.length > 0 && pads.every((p) => p.active)) state.outcome = 'won';
+    else if (atEnd) state.outcome = 'timeout';
+    return;
+  }
+  // survive
+  const cores = state.interactables.filter((i) => i.kind === 'core');
+  const coreDead = cores.some((c) => !c.active);
+  if (coreDead) {
+    // A destroyed core immediately fails the loop (timeout, not a win).
+    state.outcome = 'timeout';
+    return;
+  }
+  if (atEnd) {
+    // Survived to the end with the core (if any) intact: win.
+    state.outcome = 'won';
+  }
+}
+
+/** True when a core has been carried within its goal radius. */
+function coreAtGoal(c: Interactable): boolean {
+  return dist(c.x, c.y, c.goalX, c.goalY) <= c.radius + 8;
+}
 
 /** Count alive echoes that are not paradox (used for Avatar passive + stars). */
 export function countAliveNonParadoxEchoes(state: SimState): number {
@@ -662,9 +763,19 @@ function updatePlayerUnit(
   }
 }
 
-/** Pick up a shard / flip a lever within reach, recording it as an anchor-able. */
+/** Pick up a shard / flip a lever / grab a core within reach (anchor-able). */
 function tryInteract(state: SimState, u: Unit): void {
   for (const it of state.interactables) {
+    if (it.kind === 'plate' || it.kind === 'door' || it.kind === 'buildpad') continue;
+    if (it.kind === 'core') {
+      // Heist cores are grabbed (once), then ferried by the carrier.
+      if (state.objective === 'heist' && it.takenBySlot < 0 && dist(u.x, u.y, it.x, it.y) <= it.radius) {
+        it.takenBySlot = u.slot;
+        it.takenAtTick = state.tick;
+        it.taken = true;
+      }
+      continue;
+    }
     if (it.taken && it.kind === 'shard') continue;
     if (dist(u.x, u.y, it.x, it.y) <= it.radius) {
       it.taken = it.kind === 'lever' ? !it.taken : true;
@@ -959,7 +1070,9 @@ function projectileCanHit(p: Projectile, t: Unit): boolean {
 }
 
 function radiusFor(t: Unit): number {
-  return t.kind === 'boss' ? BOSS_RADIUS : UNIT_RADIUS;
+  if (t.kind === 'boss') return BOSS_RADIUS;
+  if (t.kind === 'minion') return MINION_RADIUS;
+  return UNIT_RADIUS;
 }
 
 /** Deal projectile damage to a unit, routing to the boss/threat path if needed. */
@@ -1296,6 +1409,19 @@ function dealDamageToUnit(u: Unit, rawDamage: number): void {
     u.invulnHits -= 1;
     return;
   }
+  // Shielded minion: the frontal shield soaks damage until it breaks.
+  if (u.kind === 'minion' && u.shieldHp > 0) {
+    const absorbed = Math.min(u.shieldHp, rawDamage);
+    u.shieldHp -= absorbed;
+    const leftover = rawDamage - absorbed;
+    if (leftover <= 0) return;
+    u.hp -= leftover;
+    if (u.hp <= 0) {
+      u.hp = 0;
+      u.alive = false;
+    }
+    return;
+  }
   const stats = u.classId ? classStats(u.classId) : null;
   let dmg = rawDamage;
   if (stats) dmg *= stats.damageTakenMul;
@@ -1409,6 +1535,37 @@ export function setBossPattern(pattern: import('./boss-pattern.js').BossPatternS
   currentPattern = pattern;
 }
 
+/**
+ * The active level's minion spawn schedule (M3). Like the boss pattern this is
+ * content-authored, deterministic data set once per loop by the runner; it does
+ * not enter the hashed state (the spawned units do). Each entry fires when
+ * `state.tick === spawnTick`, in list order (stable ids).
+ */
+let currentMinions: import('./level.js').LevelMinion[] = [];
+export function setLevelMinions(minions: import('./level.js').LevelMinion[]): void {
+  currentMinions = minions;
+}
+
+/** Spawn every scheduled minion whose spawnTick equals the current tick. */
+function spawnScheduledMinions(state: SimState): void {
+  for (const m of currentMinions) {
+    if (m.spawnTick !== state.tick) continue;
+    const u = makeUnit(state.nextId++, 'minion', 'enemy', -1);
+    u.enemyKind = m.kind;
+    u.x = m.x;
+    u.y = m.y;
+    u.hp = m.maxHp;
+    u.maxHp = m.maxHp;
+    u.moveSpeed = m.speed;
+    u.contactDamage = m.damage;
+    u.shieldHp = m.shieldHp ?? 0;
+    u.healPower = m.healPower ?? 0;
+    u.carryingCore = m.carryCore ?? -1;
+    u.attackCd = 0;
+    state.units.push(u);
+  }
+}
+
 function updateAttacks(state: SimState): void {
   for (const a of state.attacks) {
     if (a.telegraphTicks > 0) {
@@ -1449,6 +1606,346 @@ function resolveAttack(state: SimState, a: BossAttack): void {
       }
     }
     if (hit) dealDamageToUnit(u, a.damage);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// M3 minion roster (brief section 5) - generic deterministic enemy AI
+// ---------------------------------------------------------------------------
+
+/**
+ * Update every alive minion in stable id order. Each archetype has a clear,
+ * telegraphed behaviour and hunts the nearest player-team, non-paradox unit
+ * (its "prey"). Minions are enemies: player projectiles/AoE already damage them
+ * via projectileCanHit, and minion attacks damage player-team units only.
+ */
+function updateMinions(state: SimState, boss: Unit | undefined): void {
+  for (const u of state.units) {
+    if (u.kind !== 'minion' || !u.alive) continue;
+    if (u.attackCd > 0) u.attackCd -= 1;
+    const prey = nearestPrey(state, u);
+    switch (u.enemyKind) {
+      case 'chaser':
+      case 'shielded':
+        updateChaser(state, u, prey);
+        break;
+      case 'caster':
+        updateCaster(state, u, prey);
+        break;
+      case 'bomber':
+        updateBomber(state, u, prey);
+        break;
+      case 'healer':
+        updateHealer(state, u, prey, boss);
+        break;
+      case 'splitter':
+        updateChaser(state, u, prey);
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+/** Nearest alive player-team, non-paradox unit to `from` (deterministic ties). */
+function nearestPrey(state: SimState, from: Unit): Unit | undefined {
+  let best: Unit | undefined;
+  let bestD = Number.POSITIVE_INFINITY;
+  let bestId = Number.POSITIVE_INFINITY;
+  for (const t of state.units) {
+    if (!t.alive || t.team !== 'player' || t.paradox) continue;
+    const d = dist(from.x, from.y, t.x, t.y);
+    if (d < bestD - 1e-9 || (Math.abs(d - bestD) <= 1e-9 && t.id < bestId)) {
+      bestD = d;
+      best = t;
+      bestId = t.id;
+    }
+  }
+  return best;
+}
+
+/** Move a minion toward a point at its move speed, respecting closed doors. */
+function moveMinionToward(u: Unit, tx: number, ty: number, stopAt: number): void {
+  const d = dist(u.x, u.y, tx, ty);
+  if (d <= stopAt) {
+    u.facing = atan2Brads(ty - u.y, tx - u.x);
+    return;
+  }
+  const spd = perTick(u.moveSpeed > 0 ? u.moveSpeed : 120);
+  const nx = (tx - u.x) / d;
+  const ny = (ty - u.y) / d;
+  u.facing = atan2Brads(ny, nx);
+  u.x = clamp(u.x + nx * spd, -ARENA_HALF, ARENA_HALF);
+  u.y = clamp(u.y + ny * spd, -ARENA_HALF, ARENA_HALF);
+}
+
+/** Chaser / shielded / splitter: close to melee, wind up, then strike. */
+function updateChaser(_state: SimState, u: Unit, prey: Unit | undefined): void {
+  if (!prey) return;
+  const d = dist(u.x, u.y, prey.x, prey.y);
+  const reach = MINION_MELEE_RANGE + UNIT_RADIUS;
+  if (u.attackTelegraph > 0) {
+    // Winding up: hold position; land the hit when the telegraph elapses.
+    u.attackTelegraph -= 1;
+    u.facing = atan2Brads(prey.y - u.y, prey.x - u.x);
+    if (u.attackTelegraph === 0) {
+      if (dist(u.x, u.y, prey.x, prey.y) <= reach + 12) {
+        dealDamageToUnit(prey, u.contactDamage);
+      }
+      u.attackCd = MINION_MELEE_CD;
+    }
+    return;
+  }
+  moveMinionToward(u, prey.x, prey.y, reach);
+  if (d <= reach && u.attackCd <= 0) {
+    u.attackTelegraph = MINION_MELEE_TELEGRAPH;
+    u.telegraphTotal = MINION_MELEE_TELEGRAPH;
+  }
+}
+
+/** Caster: hold a standoff and lob a telegraphed slow bolt. */
+function updateCaster(state: SimState, u: Unit, prey: Unit | undefined): void {
+  if (!prey) return;
+  const d = dist(u.x, u.y, prey.x, prey.y);
+  if (u.attackTelegraph > 0) {
+    u.attackTelegraph -= 1;
+    u.facing = atan2Brads(prey.y - u.y, prey.x - u.x);
+    if (u.attackTelegraph === 0) {
+      const ang = atan2Brads(prey.y - u.y, prey.x - u.x);
+      spawnEnemyBolt(state, u, ang, CASTER_BOLT_SPEED, u.contactDamage, CASTER_BOLT_RANGE);
+      u.attackCd = CASTER_CD;
+    }
+    return;
+  }
+  if (d > CASTER_STANDOFF + 30) moveMinionToward(u, prey.x, prey.y, CASTER_STANDOFF);
+  else if (d < CASTER_STANDOFF - 30) moveMinionToward(u, u.x * 2 - prey.x, u.y * 2 - prey.y, 0);
+  else u.facing = atan2Brads(prey.y - u.y, prey.x - u.x);
+  if (d <= CASTER_BOLT_RANGE && u.attackCd <= 0) {
+    u.attackTelegraph = CASTER_TELEGRAPH;
+    u.telegraphTotal = CASTER_TELEGRAPH;
+  }
+}
+
+/** Bomber: charge the prey, then detonate a telegraphed AoE near it. */
+function updateBomber(state: SimState, u: Unit, prey: Unit | undefined): void {
+  if (!prey) return;
+  const d = dist(u.x, u.y, prey.x, prey.y);
+  if (u.attackTelegraph > 0) {
+    u.attackTelegraph -= 1;
+    if (u.attackTelegraph === 0) {
+      // Detonate: AoE damage to all player-team units in range; bomber dies.
+      for (const t of state.units) {
+        if (t.team !== 'player' || !t.alive) continue;
+        if (dist(u.x, u.y, t.x, t.y) <= BOMBER_AOE_RADIUS + UNIT_RADIUS) {
+          dealDamageToUnit(t, u.contactDamage);
+        }
+      }
+      u.hp = 0;
+      u.alive = false;
+    }
+    return;
+  }
+  moveMinionToward(u, prey.x, prey.y, BOMBER_TRIGGER_RANGE - 8);
+  if (d <= BOMBER_TRIGGER_RANGE) {
+    u.attackTelegraph = BOMBER_TELEGRAPH;
+    u.telegraphTotal = BOMBER_TELEGRAPH;
+  }
+}
+
+/** Healer: keep a standoff and heal the most-wounded enemy (incl. the boss). */
+function updateHealer(
+  state: SimState,
+  u: Unit,
+  prey: Unit | undefined,
+  boss: Unit | undefined,
+): void {
+  // Flee from the nearest prey to survive; heal an enemy on cadence.
+  if (prey) {
+    const d = dist(u.x, u.y, prey.x, prey.y);
+    if (d < HEALER_STANDOFF) moveMinionToward(u, u.x * 2 - prey.x, u.y * 2 - prey.y, 0);
+  }
+  if (u.attackCd > 0) return;
+  const patient = mostWoundedEnemy(state, u, boss);
+  if (patient && dist(u.x, u.y, patient.x, patient.y) <= HEALER_RANGE) {
+    patient.hp = Math.min(patient.maxHp, patient.hp + u.healPower);
+    u.attackCd = HEALER_CD;
+    u.facing = atan2Brads(patient.y - u.y, patient.x - u.x);
+  }
+}
+
+/** The enemy (boss or minion) with the lowest HP fraction below full. */
+function mostWoundedEnemy(state: SimState, healer: Unit, boss: Unit | undefined): Unit | undefined {
+  let best: Unit | undefined;
+  let bestFrac = 1;
+  let bestId = Number.POSITIVE_INFINITY;
+  const consider = (t: Unit): void => {
+    if (!t.alive || t.id === healer.id) return;
+    if (t.team !== 'enemy' || t.paradox) return;
+    if (t.hp >= t.maxHp) return;
+    const frac = t.hp / t.maxHp;
+    if (frac < bestFrac - 1e-9 || (Math.abs(frac - bestFrac) <= 1e-9 && t.id < bestId)) {
+      bestFrac = frac;
+      best = t;
+      bestId = t.id;
+    }
+  };
+  for (const t of state.units) consider(t);
+  if (boss) consider(boss);
+  return best;
+}
+
+/** Spawn a straight enemy bolt (caster). Damages player-team units. */
+function spawnEnemyBolt(
+  state: SimState,
+  u: Unit,
+  angle: number,
+  speed: number,
+  damage: number,
+  range: number,
+): void {
+  const dx = cosFx(angle) / TRIG_ONE;
+  const dy = sinFx(angle) / TRIG_ONE;
+  const v = perTick(speed);
+  const p: Projectile = {
+    id: state.nextId++,
+    team: 'enemy',
+    ownerId: u.id,
+    ownerSlot: -1,
+    x: u.x,
+    y: u.y,
+    vx: dx * v,
+    vy: dy * v,
+    damage,
+    life: Math.ceil(range / v),
+    piercing: false,
+    hits: [],
+    visual: 'bolt',
+  };
+  state.projectiles.push(p);
+}
+
+/** Splitter death: spawn SPLITTER_CHILDREN smaller children (generation 0 only). */
+function handleMinionDeaths(state: SimState): void {
+  const newborns: Unit[] = [];
+  for (const u of state.units) {
+    if (u.kind !== 'minion' || u.alive) continue;
+    if (u.enemyKind === 'splitter' && u.splitGen === 0) {
+      for (let i = 0; i < SPLITTER_CHILDREN; i++) {
+        const c = makeUnit(state.nextId++, 'minion', 'enemy', -1);
+        c.enemyKind = 'splitter';
+        c.splitGen = 1;
+        c.maxHp = Math.max(1, Math.round(u.maxHp * SPLITTER_CHILD_HP_FRACTION));
+        c.hp = c.maxHp;
+        c.moveSpeed = u.moveSpeed;
+        c.contactDamage = Math.round(u.contactDamage * 0.6);
+        // Offset children left/right so they do not stack (deterministic).
+        c.x = clamp(u.x + (i === 0 ? -30 : 30), -ARENA_HALF, ARENA_HALF);
+        c.y = clamp(u.y + 20, -ARENA_HALF, ARENA_HALF);
+        newborns.push(c);
+      }
+    }
+  }
+  // Cull dead minions; keep boss/players (their alive flag is handled elsewhere).
+  state.units = state.units.filter((u) => u.kind !== 'minion' || u.alive);
+  for (const c of newborns) state.units.push(c);
+}
+
+// ---------------------------------------------------------------------------
+// M3 objective mechanics: plates, doors, cores, build pads
+// ---------------------------------------------------------------------------
+
+/** Recompute each pressure plate's `active` flag from live player presence. */
+function updatePresencePlates(state: SimState): void {
+  for (const it of state.interactables) {
+    if (it.kind !== 'plate') continue;
+    let pressed = false;
+    for (const u of state.units) {
+      if (u.team !== 'player' || !u.alive || u.paradox) continue;
+      if (dist(u.x, u.y, it.x, it.y) <= it.radius) {
+        pressed = true;
+        break;
+      }
+    }
+    it.active = pressed;
+    if (pressed && it.takenAtTick < 0) {
+      it.takenAtTick = state.tick;
+      it.taken = true;
+    }
+  }
+}
+
+/**
+ * Advance objective mechanics after units have moved this tick:
+ *  - doors open while their linked plate is pressed or linked lever flipped;
+ *  - build pads fill while a player-team unit stands on them, then complete;
+ *  - a carried core follows its carrier and is delivered when at its goal;
+ *  - protected cores take contact damage from adjacent enemies.
+ */
+function updateObjectiveMechanics(state: SimState): void {
+  for (const it of state.interactables) {
+    if (it.kind === 'door') {
+      const link = it.linkedTo >= 0 ? interactableByDefIndex(state, it.linkedTo) : undefined;
+      // Open while the linked plate is pressed or the linked lever is flipped.
+      it.active = link ? link.active || link.taken : it.taken;
+    } else if (it.kind === 'buildpad') {
+      if (it.active) continue; // already built
+      let standing = false;
+      for (const u of state.units) {
+        if (u.team !== 'player' || !u.alive || u.paradox) continue;
+        if (dist(u.x, u.y, it.x, it.y) <= it.radius) {
+          standing = true;
+          break;
+        }
+      }
+      if (standing) {
+        it.hp += 1; // build progress in ticks
+        if (it.hp >= it.buildNeeded) {
+          it.active = true;
+          it.taken = true;
+          it.takenAtTick = state.tick;
+        }
+      }
+    } else if (it.kind === 'core') {
+      updateCore(state, it);
+    }
+  }
+}
+
+/**
+ * A Time-Core. In a heist it can be picked up (via Interact) by a player-team
+ * unit and ferried; while carried it tracks the carrier and is "delivered" when
+ * inside its goal zone. In Protect-the-Core it stays put and loses HP to
+ * adjacent enemies; at 0 HP it is destroyed (`active` = false).
+ */
+function updateCore(state: SimState, core: Interactable): void {
+  if (state.objective === 'heist') {
+    // takenBySlot holds the carrying slot; follow that carrier's position.
+    if (core.takenBySlot >= 0) {
+      const carrier = state.units.find(
+        (u) => u.slot === core.takenBySlot && u.team === 'player' && u.alive && !u.paradox,
+      );
+      if (carrier) {
+        core.x = carrier.x;
+        core.y = carrier.y;
+      } else {
+        // Carrier died / paradoxed: drop the core where it is.
+        core.takenBySlot = -1;
+      }
+    }
+    return;
+  }
+  // Protect-the-Core: enemies adjacent to the core chip its HP.
+  if (!core.active) return;
+  for (const u of state.units) {
+    if (u.team !== 'enemy' || !u.alive || u.paradox) continue;
+    if (u.kind === 'boss') continue; // boss uses its own attacks
+    if (dist(u.x, u.y, core.x, core.y) <= core.radius + MINION_RADIUS) {
+      core.hp -= u.contactDamage > 0 ? u.contactDamage / 30 : 0.5;
+    }
+  }
+  if (core.hp <= 0) {
+    core.hp = 0;
+    core.active = false;
   }
 }
 

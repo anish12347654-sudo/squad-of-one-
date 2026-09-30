@@ -8,6 +8,7 @@
  */
 
 import type { BossPatternStep } from './boss-pattern.js';
+import type { EnemyKind, InteractableKind, SimObjective } from './types.js';
 
 export interface SpawnPoint {
   x: number;
@@ -48,12 +49,54 @@ export interface LevelDef {
    * live Interactable per entry each loop. Omitted for M1 levels.
    */
   interactables?: LevelInteractable[];
+
+  // --- M3 additive fields (enemy roster + objective mechanics) ---
+  /**
+   * Win condition for the loop. Defaults to 'boss' (win when the boss dies).
+   * 'survive' = reach loopLength with the protected core alive (or simply
+   * survive if there is no core); 'heist' = carry every core to its goal;
+   * 'build' = complete every build pad. Omitting it keeps M1/M2 boss levels.
+   */
+  objective?: SimObjective;
+  /** Non-boss enemy waves (brief section 5), spawned deterministically. */
+  minions?: LevelMinion[];
 }
 
-/** A level-authored interactable placement (M2). */
+/** A level-authored interactable placement (M2 + M3 objective mechanics). */
 export interface LevelInteractable {
-  kind: 'shard' | 'lever';
+  kind: InteractableKind;
   x: number;
   y: number;
   radius: number;
+  /**
+   * defIndex this object links to (a `door` opens while its linked plate is
+   * pressed / linked lever flipped). Index into the level's interactables list.
+   */
+  linkedTo?: number;
+  /** For a `core`: HP (Protect) and/or the goal zone a carried core must reach. */
+  hp?: number;
+  goalX?: number;
+  goalY?: number;
+  /** For a `buildpad`: ticks of standing required to complete the build. */
+  buildNeeded?: number;
+}
+
+/** A level-authored minion spawn (M3). Deterministic: fires at `spawnTick`. */
+export interface LevelMinion {
+  kind: EnemyKind;
+  x: number;
+  y: number;
+  /** Tick within the loop at which this minion spawns (0 = at loop start). */
+  spawnTick: number;
+  maxHp: number;
+  /** Movement speed (u/s). */
+  speed: number;
+  /** Contact / attack / explosion damage. */
+  damage: number;
+  /** For a `shielded` minion: frontal shield HP. */
+  shieldHp?: number;
+  /** For a `healer` minion: heal-per-tick applied to wounded enemies. */
+  healPower?: number;
+  /** For a heist `core` carrier: the core defIndex it should ferry. */
+  carryCore?: number;
 }

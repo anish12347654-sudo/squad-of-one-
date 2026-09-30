@@ -28,6 +28,7 @@ export {
   setEchoInputs,
   setEchoRecordings,
   setBossPattern,
+  setLevelMinions,
   countAliveNonParadoxEchoes,
   angleWithin,
   ARENA_HALF,

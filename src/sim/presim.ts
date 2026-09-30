@@ -18,6 +18,7 @@ import {
   setEchoInputs,
   setEchoRecordings,
   setBossPattern,
+  setLevelMinions,
   cloneSimState,
   type EchoRecordingMeta,
 } from './sim.js';
@@ -159,6 +160,7 @@ function snapshotOf(state: SimState): ScrubSnapshot {
  */
 export function runPreSim(req: PreSimRequest): PreSimResult {
   setBossPattern(req.level.boss.pattern);
+  setLevelMinions(req.level.minions ?? []);
   // No live player: build the state with liveIncluded=false so the recording
   // slot spawns nothing; every OTHER recorded slot spawns as an echo.
   let state = createLevelState(req.level, req.recordingSlot, req.slotClasses, false);

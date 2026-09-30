@@ -287,3 +287,33 @@ export const PARADOX_DIVERGE_TICKS = 20;
 export const PARADOX_TELEGRAPH_TICKS = Math.round(0.5 * SECOND);
 /** A hostile paradox echo attacks the nearest non-paradox unit within this range. */
 export const PARADOX_AGGRO_RANGE = 400;
+
+// ---------------------------------------------------------------------------
+// M3 minion roster tuning (brief section 5). All durations in ticks.
+// ---------------------------------------------------------------------------
+
+/** Body radius for minions (projectile hit tests + contact range). */
+export const MINION_RADIUS = 20;
+/** Chaser/shielded: melee wind-up then a contact strike, then a short recover. */
+export const MINION_MELEE_TELEGRAPH = Math.round(0.35 * SECOND);
+export const MINION_MELEE_CD = Math.round(0.9 * SECOND);
+export const MINION_MELEE_RANGE = 46;
+/** Caster: stand-off distance, telegraph, bolt speed/range, cooldown. */
+export const CASTER_STANDOFF = 320;
+export const CASTER_TELEGRAPH = Math.round(0.7 * SECOND);
+export const CASTER_CD = Math.round(1.4 * SECOND);
+export const CASTER_BOLT_SPEED = 300;
+export const CASTER_BOLT_RANGE = 520;
+/** Bomber: fuse telegraph before it detonates in an AoE on contact/expiry. */
+export const BOMBER_TELEGRAPH = Math.round(0.6 * SECOND);
+export const BOMBER_AOE_RADIUS = 120;
+export const BOMBER_TRIGGER_RANGE = 70;
+/** Healer: heal range + cadence for restoring wounded enemies (incl. boss). */
+export const HEALER_STANDOFF = 260;
+export const HEALER_RANGE = 300;
+export const HEALER_CD = Math.round(0.5 * SECOND);
+/** Splitter: children spawned on death (generation 0 only) + their HP fraction. */
+export const SPLITTER_CHILDREN = 2;
+export const SPLITTER_CHILD_HP_FRACTION = 0.4;
+/** A protected Time-Core's default HP (Protect-the-Core objective). */
+export const CORE_DEFAULT_HP = 300;

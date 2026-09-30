@@ -22,7 +22,14 @@
  * objective is the fully-simulated fight.
  */
 
-import type { LevelDef, BossPatternStep, ClassId } from '@sim/index.js';
+import type {
+  LevelDef,
+  BossPatternStep,
+  ClassId,
+  LevelMinion,
+  LevelInteractable,
+  SimObjective,
+} from '@sim/index.js';
 import type { CampaignLevel } from '../campaign.js';
 
 const SECOND = 60;
@@ -94,9 +101,11 @@ interface BossLevelConfig {
   maxHp: number;
   pattern: BossPatternStep[];
   starEchoesAlive: number;
-  interactables?: LevelDef['interactables'];
+  interactables?: LevelInteractable[];
   loopSeconds?: number;
   bossSpeed?: number;
+  objective?: SimObjective;
+  minions?: LevelMinion[];
 }
 
 function bossLevel(cfg: BossLevelConfig): LevelDef {
@@ -117,8 +126,38 @@ function bossLevel(cfg: BossLevelConfig): LevelDef {
       pattern: cfg.pattern,
     },
     starEchoesAlive: cfg.starEchoesAlive,
+    ...(cfg.objective ? { objective: cfg.objective } : {}),
     ...(cfg.interactables ? { interactables: cfg.interactables } : {}),
+    ...(cfg.minions ? { minions: cfg.minions } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// M3 minion wave helpers (deterministic spawn schedules per objective).
+// ---------------------------------------------------------------------------
+
+/** A staggered wave of one minion archetype from the top of the arena. */
+function wave(
+  kind: LevelMinion['kind'],
+  count: number,
+  opts: { hp: number; speed: number; damage: number; first: number; gap: number; shieldHp?: number; healPower?: number },
+): LevelMinion[] {
+  const out: LevelMinion[] = [];
+  for (let i = 0; i < count; i++) {
+    const x = count === 1 ? 0 : -220 + (440 / (count - 1)) * i;
+    out.push({
+      kind,
+      x: R(x),
+      y: -160,
+      spawnTick: opts.first + i * opts.gap,
+      maxHp: opts.hp,
+      speed: opts.speed,
+      damage: opts.damage,
+      ...(opts.shieldHp !== undefined ? { shieldHp: opts.shieldHp } : {}),
+      ...(opts.healPower !== undefined ? { healPower: opts.healPower } : {}),
+    });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,8 +194,13 @@ export const CAMPAIGN_LEVELS: readonly CampaignLevel[] = [
   {
     id: 'tut-3', worldId: 'tutorial', nameKey: 'level.name.tut3', objective: 'heist',
     def: bossLevel({
-      id: 'tut-3', slotCount: 4, maxHp: 2400, pattern: teachingPattern(18), starEchoesAlive: 1,
-      interactables: [{ kind: 'shard', x: -150, y: 40, radius: 44 }, { kind: 'shard', x: 150, y: 40, radius: 44 }],
+      id: 'tut-3', slotCount: 4, maxHp: 2400, pattern: teachingPattern(14), starEchoesAlive: 1,
+      objective: 'heist', loopSeconds: 22,
+      // Grab the core (index 0), carry it to its goal near the bottom.
+      interactables: [
+        { kind: 'core', x: 0, y: -40, radius: 46, goalX: 0, goalY: 300 },
+        { kind: 'shard', x: -170, y: 60, radius: 44 },
+      ],
     }),
     unlocks: ['rogue'],
     storyKeys: ['story.tutorial.3.a'],
@@ -171,14 +215,29 @@ export const CAMPAIGN_LEVELS: readonly CampaignLevel[] = [
   },
   {
     id: 'w1-2', worldId: 'world1', nameKey: 'level.name.w1_2', objective: 'survive',
-    def: bossLevel({ id: 'w1-2', slotCount: 4, maxHp: 3200, pattern: PENDULUM_KNIGHT, starEchoesAlive: 2 }),
+    def: bossLevel({
+      id: 'w1-2', slotCount: 4, maxHp: 3200, pattern: PENDULUM_KNIGHT, starEchoesAlive: 2,
+      objective: 'survive', loopSeconds: 18,
+      interactables: [{ kind: 'core', x: 0, y: 120, radius: 52, hp: 900 }],
+      minions: [
+        ...wave('chaser', 2, { hp: 90, speed: 130, damage: 8, first: 90, gap: 40 }),
+        ...wave('chaser', 3, { hp: 90, speed: 130, damage: 8, first: 420, gap: 45 }),
+        ...wave('caster', 1, { hp: 70, speed: 90, damage: 10, first: 600, gap: 0 }),
+      ],
+    }),
     unlocks: [], storyKeys: [], tutorialKey: 'tutorial.survive', solutionPlan: P4, starMax: 3,
   },
   {
     id: 'w1-3', worldId: 'world1', nameKey: 'level.name.w1_3', objective: 'heist',
     def: bossLevel({
       id: 'w1-3', slotCount: 4, maxHp: 3400, pattern: PENDULUM_KNIGHT, starEchoesAlive: 2,
-      interactables: [{ kind: 'shard', x: -180, y: 0, radius: 42 }, { kind: 'shard', x: 180, y: 0, radius: 42 }, { kind: 'lever', x: 0, y: 120, radius: 42 }],
+      objective: 'heist', loopSeconds: 24,
+      // 0 core -> goal top; 1 plate (hold to open) -> 2 door on the path.
+      interactables: [
+        { kind: 'core', x: -200, y: 120, radius: 46, goalX: 260, goalY: 120 },
+        { kind: 'plate', x: -40, y: 260, radius: 50 },
+        { kind: 'door', x: 90, y: 120, radius: 60, linkedTo: 1 },
+      ],
     }),
     unlocks: [], storyKeys: [], tutorialKey: 'tutorial.plates', solutionPlan: P4, starMax: 3,
   },
@@ -201,14 +260,30 @@ export const CAMPAIGN_LEVELS: readonly CampaignLevel[] = [
   },
   {
     id: 'w2-2', worldId: 'world2', nameKey: 'level.name.w2_2', objective: 'survive',
-    def: bossLevel({ id: 'w2-2', slotCount: 5, maxHp: 8600, pattern: MIRAGE_DJINN, starEchoesAlive: 2 }),
+    def: bossLevel({
+      id: 'w2-2', slotCount: 5, maxHp: 8600, pattern: MIRAGE_DJINN, starEchoesAlive: 2,
+      objective: 'survive', loopSeconds: 20,
+      interactables: [{ kind: 'core', x: 0, y: 120, radius: 52, hp: 1100 }],
+      minions: [
+        ...wave('chaser', 3, { hp: 100, speed: 140, damage: 9, first: 90, gap: 35 }),
+        ...wave('bomber', 2, { hp: 70, speed: 120, damage: 22, first: 420, gap: 60 }),
+        ...wave('chaser', 3, { hp: 110, speed: 140, damage: 9, first: 720, gap: 35 }),
+      ],
+    }),
     unlocks: [], storyKeys: [], tutorialKey: null, solutionPlan: P5, starMax: 3,
   },
   {
     id: 'w2-3', worldId: 'world2', nameKey: 'level.name.w2_3', objective: 'heist',
     def: bossLevel({
       id: 'w2-3', slotCount: 5, maxHp: 8800, pattern: MIRAGE_DJINN, starEchoesAlive: 2,
-      interactables: [{ kind: 'shard', x: -160, y: 20, radius: 42 }, { kind: 'shard', x: 160, y: 20, radius: 42 }],
+      objective: 'heist', loopSeconds: 24,
+      // Two cores to two goals; a plate-gated door blocks the right lane.
+      interactables: [
+        { kind: 'core', x: -220, y: 40, radius: 44, goalX: -220, goalY: 300 },
+        { kind: 'core', x: 220, y: 40, radius: 44, goalX: 220, goalY: 300 },
+        { kind: 'plate', x: 0, y: 240, radius: 50 },
+        { kind: 'door', x: 220, y: 150, radius: 60, linkedTo: 2 },
+      ],
     }),
     unlocks: [], storyKeys: [], tutorialKey: null, solutionPlan: P5, starMax: 3,
   },
@@ -233,7 +308,17 @@ export const CAMPAIGN_LEVELS: readonly CampaignLevel[] = [
     id: 'w3-2', worldId: 'world3', nameKey: 'level.name.w3_2', objective: 'build',
     def: bossLevel({
       id: 'w3-2', slotCount: 6, maxHp: 11200, pattern: STASIS_WYRM, starEchoesAlive: 3,
-      interactables: [{ kind: 'lever', x: -120, y: 60, radius: 44 }, { kind: 'lever', x: 120, y: 60, radius: 44 }],
+      objective: 'build', loopSeconds: 22,
+      // Three build pads to complete (Engineer / anyone stands on them).
+      interactables: [
+        { kind: 'buildpad', x: -180, y: 40, radius: 50, buildNeeded: R(2.2 * SECOND) },
+        { kind: 'buildpad', x: 0, y: 120, radius: 50, buildNeeded: R(2.2 * SECOND) },
+        { kind: 'buildpad', x: 180, y: 40, radius: 50, buildNeeded: R(2.2 * SECOND) },
+      ],
+      minions: [
+        ...wave('chaser', 2, { hp: 120, speed: 125, damage: 10, first: 180, gap: 60 }),
+        ...wave('chaser', 2, { hp: 120, speed: 125, damage: 10, first: 600, gap: 60 }),
+      ],
     }),
     unlocks: [], storyKeys: [], tutorialKey: 'tutorial.build', solutionPlan: P6, starMax: 3,
   },
@@ -241,7 +326,13 @@ export const CAMPAIGN_LEVELS: readonly CampaignLevel[] = [
     id: 'w3-3', worldId: 'world3', nameKey: 'level.name.w3_3', objective: 'heist',
     def: bossLevel({
       id: 'w3-3', slotCount: 6, maxHp: 11600, pattern: STASIS_WYRM, starEchoesAlive: 3,
-      interactables: [{ kind: 'shard', x: -170, y: 10, radius: 42 }, { kind: 'shard', x: 170, y: 10, radius: 42 }, { kind: 'lever', x: 0, y: 130, radius: 42 }],
+      objective: 'heist', loopSeconds: 26,
+      interactables: [
+        { kind: 'core', x: -200, y: 40, radius: 44, goalX: 240, goalY: 260 },
+        { kind: 'plate', x: -60, y: 260, radius: 50 },
+        { kind: 'door', x: 100, y: 160, radius: 60, linkedTo: 1 },
+      ],
+      minions: [...wave('shielded', 2, { hp: 160, speed: 110, damage: 12, first: 240, gap: 120, shieldHp: 80 })],
     }),
     unlocks: [], storyKeys: [], tutorialKey: null, solutionPlan: P6, starMax: 3,
   },

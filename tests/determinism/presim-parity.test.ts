@@ -6,6 +6,7 @@ import {
   setEchoInputs,
   setEchoRecordings,
   setBossPattern,
+  setLevelMinions,
   hashState,
   emptyInput,
   type PreSimRequest,
@@ -58,6 +59,7 @@ function requestFromSolvedArena(recordingSlot: number): PreSimRequest {
  */
 function referenceHashes(req: PreSimRequest): number[] {
   setBossPattern(req.level.boss.pattern);
+  setLevelMinions(req.level.minions ?? []);
   let state = createLevelState(req.level, req.recordingSlot, req.slotClasses, false);
   const echoRec = new Map<number, EchoRecordingMeta>();
   for (let slot = 0; slot < req.level.slotCount; slot++) {
