@@ -38,16 +38,19 @@ raid: tank, healer, DPS, all recordings of you.
   is just its recording re-fed into the same deterministic sim.
 - **State hash** (FNV-1a over quantized state) is the determinism fingerprint.
 
-## Classes (table grows in M1-M2)
+## Classes (M1 shipped subset; table grows in M2)
 
-| Class | Role   | Loop identity (planned)                          |
-| ----- | ------ | ------------------------------------------------ |
-| TBD-A | Tank   | Recordings soak/aggro; you reposition each loop. |
-| TBD-B | Healer | Recordings sustain the squad over loops.         |
-| TBD-C | DPS    | Recordings stack burst windows.                  |
+| Class    | Role   | HP  | Spd | Primary                           | Skill                                  |
+| -------- | ------ | --- | --- | --------------------------------- | -------------------------------------- |
+| Guardian | Tank   | 400 | 150 | Shield bash, 60u arc, 20/0.6s     | Taunt 4s (cd 8s); takes 30% less dmg   |
+| Medic    | Healer | 180 | 190 | Heal beam, lowest-HP% ally <260u  | Sanctuary 110u zone -50% dmg 3s (cd10) |
+| Ranger   | DPS    | 160 | 200 | Arrow 520u/s 18/0.35s range 600u  | Piercing Shot 1s charge 120 line (cd7) |
 
-> Class kits are designed in M1 once the sim contracts are frozen; entries above
-> are placeholders in the design doc only (not shipped UI) and will be filled in.
+Dash is shared by all classes (~120u over 0.2s, 3s cooldown). The automatic
+primary auto-targets the nearest valid target in range. Each class has a
+distinct silhouette, colour, sound key and picker blurb (`src/content/classes.ts`).
+The loop fantasy: recordings tank/aggro, sustain, or stack DPS while the live
+run adds the missing role - you become the whole raid across three slots.
 
 ## Content ramp
 

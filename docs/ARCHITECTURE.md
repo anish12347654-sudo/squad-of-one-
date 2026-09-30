@@ -97,5 +97,143 @@ The runner lives outside the pure sim because it reads wall-clock deltas.
 | Build           | `tsc --noEmit && vite build`            | `npm run build`     |
 | E2E boot + shot | `e2e/boot.spec.ts` (title, 0 errors)    | `npm run e2e`       |
 
-Later milestones extend this map (level-solution replays, node-vs-browser hash
-parity, multi-viewport screenshot inspection).
+Later milestones extend this map (node-vs-browser hash parity, multi-viewport
+screenshot inspection).
+
+At M1 the map gains:
+
+| Gate               | Where (M1)                                          | Command          |
+| ------------------ | --------------------------------------------------- | ---------------- |
+| Threat rules       | `tests/unit/threat.test.ts`                         | `npm run test`   |
+| Recording RLE      | `tests/unit/recording.test.ts` (round-trip)         | `npm run test`   |
+| Invariance Rule    | `tests/determinism/invariance.test.ts`              | `npm run test`   |
+| Level solution     | `tests/solutions/arena-01.solution.test.ts`         | `npm run test`   |
+| E2E gameplay       | `e2e/gameplay.spec.ts` (dev hook, screenshots, 0 err)| `npm run e2e`   |
+
+The solution fixture is regenerated with `npm run record:solutions`
+(`scripts/record-solutions.ts`), which plays the scripted bots
+(`src/content/bots.ts`) through the pure sim and writes
+`tests/solutions/arena-01.solution.json`.
+
+---
+
+## Frozen M1 Contracts
+
+These interfaces are **frozen** as of M1. Later content milestones (classes,
+enemies, levels, paradox, rewrite, meta) build on top of them and must not
+repurpose or remove existing fields or change existing semantics. Additive
+changes (new optional fields, new enum members, new modules) are allowed. The
+authoritative shapes live in `src/sim/*` and are re-exported from
+`src/sim/index.ts`.
+
+### 1. `step()` signature
+
+```ts
+type StepFn = (state: SimState, input: InputFrame) => SimState;
+```
+
+`input` is the **live player's** frame for this tick. Echo inputs are injected
+before the call via `setEchoInputs(bySlot: Map<slot, InputFrame>)`; the boss
+pattern is set once per loop via `setBossPattern(steps)`. `step` mutates and
+returns the passed state, is pure w.r.t. the outside world (only entropy is
+`state.rng`), and advances exactly one tick. It is deterministic: identical
+`(state, input, echoInputs, pattern)` always yield identical output and hash.
+
+### 2. Entity model (`src/sim/types.ts`)
+
+- **`Unit`** - live player, echo, or boss. Stable integer `id`; `kind`
+  (`'player' | 'echo' | 'boss' | 'projectile'`), `team` (`'player' | 'enemy'`),
+  `slot` (0-based, `-1` for boss), `classId`, quantized `x/y` (world units),
+  `facing` (brads), `hp/maxHp`, `alive`, cooldown counters (`primaryCd`,
+  `skillCd`, `dashCd`), dash state (`dashTicks/dashX/dashY`), and status timers
+  (`tauntTicks`, `sanctuaryTicks`, `chargeTicks`).
+- **`Projectile`** - `id`, `team`, `ownerId/ownerSlot`, `x/y`, `vx/vy`,
+  `damage`, `life` (ticks), `piercing`, `hits[]`.
+- **`BossAttack`** - `id`, `shape` (`'slam' | 'cone' | 'charge'`),
+  `telegraphTicks`, `activeTicks`, `fired`, geometry (`x/y/radius/angle/halfArc`),
+  `damage`.
+- **`BossState`** - the aggro brain: `threat[]` (id-sorted `{targetId, threat}`),
+  `targetId`, `reevalCd`, `forcedTauntTicks/forcedTargetId`, `phase`, `attackCd`,
+  `patternCursor`.
+- **`SimState`** - root: `tick`, `seed`, `rng`, `loopLength`, `recordingSlot`,
+  `slotCount`, `slotClasses[]`, `units[]`, `projectiles[]`, `attacks[]`, `boss`,
+  `nextId`, `outcome` (`'running' | 'won' | 'timeout'`), `playerId`.
+
+**Contract 3.2 invariants (frozen):** player-team units never body-collide with
+each other or with enemies; enemies never knock back or displace them; enemy
+attacks deal damage only (no movement statuses in M1); a dead echo stays dead
+for the loop.
+
+### 3. `InputFrame` layout (`src/sim/types.ts`, `src/sim/recording.ts`)
+
+```
+moveX   int8   [-127,127]
+moveY   int8   [-127,127]
+aim     uint8  [0,255] (mapped to 4096 brads via aim<<4 when active)
+aimActive bit
+buttons uint8  bitmask: BUTTON_SKILL=1, BUTTON_DASH=2, BUTTON_INTERACT=4
+```
+
+Wire packing is 5 bytes/frame: `[moveX, moveY, aim, flags(bit0=aimActive),
+buttons]`.
+
+### 4. Recording / RLE format (`src/sim/recording.ts`)
+
+- A **`Recording`** = `{ classId, length, frames[], positions:Float64Array,
+  anchors[] }`. `frames` is one `InputFrame` per tick. `positions` holds the
+  echo's `x,y` per tick (`positions[2t], positions[2t+1]`) and `anchors`
+  (`{objectId, tick}`) are reserved for **M2 paradox detection only** - the sim
+  never reads them for gameplay.
+- **RLE encoding** (`encodeInputs` / `decodeInputs`): `[uint32 frameCount]`
+  then repeated `[uint16 runLength][5-byte frame]`. Round-trippable.
+- **Serialization** (`serializeRecording` / `deserializeRecording`): JSON-safe
+  `{ classId, length, rle:number[], positions:number[], anchors[] }`. This is
+  the level-solution fixture format under `tests/solutions/*.solution.json`.
+
+### 5. Threat rule constants (`src/sim/threat.ts`)
+
+```
+THREAT_PER_DAMAGE = 1     // +1 threat per point of damage
+THREAT_PER_HEAL   = 0.5   // +0.5 threat per HP healed (credited to the healer)
+TAUNT_THREAT_BONUS = 100  // taunter threat := current max + 100
+REEVAL_TICKS = 60         // target re-evaluated at most once per second
+```
+
+Targeting: highest **positive** threat; if none, idle (`targetId = -1`). Ties
+break to the **lowest target id** (== lowest slot for the player team).
+Re-evaluation is capped to once/second **except** a taunt (`applyTaunt`)
+overrides instantly and holds for its duration; a target that dies is dropped
+immediately. Heals only target allies below 100% HP (lowest HP% first, tie to
+lowest id).
+
+### 6. State-hash definition (`src/sim/hash.ts`)
+
+FNV-1a 32-bit over a **quantized** traversal of the state: numbers rounded to a
+1/`QUANTIZE_SCALE` grid (`QUANTIZE_SCALE = 1024`), object keys visited in sorted
+order, arrays length-prefixed. `hashState(state)` is the determinism
+fingerprint; identical inputs must reproduce identical per-tick hash sequences.
+Transient scratch (spatial hash, echo-input buffer, boss pattern reference) is
+**not** part of the hashed state - it is fully derived from hashed state +
+deterministic inputs.
+
+### 7. sim <-> content boundary
+
+- `src/content` depends on `src/sim`'s public API only (via `@sim/index.js`) and
+  is pure data + pattern scripts. It authors **`LevelDef`** (`src/sim/level.ts`)
+  and **`BossPatternStep[]`** (`src/sim/boss-pattern.ts`), plus presentation-only
+  metadata (`src/content/classes.ts`: name/colour/silhouette/sound/blurb) that
+  the sim never reads.
+- Class **stats** that the sim reads every tick (HP, speed, damage, cooldowns,
+  skill tuning) live in `src/sim/classes.ts` as frozen constants
+  (`classStats(id)`), so the pure sim stays self-contained.
+- **`LevelRunner`** (`src/sim/level-runner.ts`) is the pure orchestrator of the
+  time-loop: it owns per-slot recordings, routes live/echo input through the
+  same `step()`, restarts each loop from the initial state (boss full HP, same
+  seed, all units at tick 0), fast-forwards after the live player dies (the sim
+  still ticks), and computes win/fail + stars. Its methods (`chooseClass`,
+  `tickWith`, `needsClassChoice`, `computeStars`, ...) are the frozen surface the
+  game layer drives.
+- The game layer (`src/game`) reads sim state to render and turns device input
+  into `InputFrame`s. The **dev hook** (`window.__SQUAD`, `src/game/dev-hook.ts`)
+  feeds tick-exact `InputFrame`s through the same pipeline for e2e + solution
+  replays and never affects live play.

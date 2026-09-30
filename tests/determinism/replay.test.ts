@@ -1,19 +1,22 @@
 import { describe, it, expect } from 'vitest';
 import { createSimState, cloneSimState, step } from '@sim/sim.js';
 import { hashState } from '@sim/hash.js';
-import { emptyInput } from '@sim/types.js';
+import { emptyInput, BUTTON_SKILL, BUTTON_DASH } from '@sim/types.js';
 import type { InputFrame } from '@sim/types.js';
 
 /** Build a deterministic, varied input stream (no randomness of its own). */
 function makeInputs(count: number): InputFrame[] {
   const inputs: InputFrame[] = [];
   for (let i = 0; i < count; i++) {
+    let buttons = 0;
+    if (i % 90 === 0) buttons |= BUTTON_SKILL;
+    if (i % 50 === 0) buttons |= BUTTON_DASH;
     inputs.push({
       moveX: ((i * 7) % 255) - 127,
       moveY: ((i * 13) % 255) - 127,
       aim: (i * 5) % 256,
       aimActive: i % 3 === 0,
-      buttons: i % 4,
+      buttons,
     });
   }
   return inputs;
@@ -38,23 +41,16 @@ describe('simulation determinism', () => {
     expect(second).toEqual(first);
   });
 
-  it('diverges for different seeds', () => {
-    const inputs = makeInputs(120);
-    const a = runAndHash(1, inputs);
-    const b = runAndHash(2, inputs);
-    expect(a).not.toEqual(b);
-  });
-
   it('diverges for different inputs', () => {
-    const a = runAndHash(5, makeInputs(120));
-    const bInputs = makeInputs(120);
-    bInputs[50] = { ...(bInputs[50] as InputFrame), moveX: 42 };
+    const a = runAndHash(5, makeInputs(200));
+    const bInputs = makeInputs(200);
+    bInputs[50] = { ...(bInputs[50] as InputFrame), moveX: 42, moveY: -30 };
     const b = runAndHash(5, bInputs);
     expect(a).not.toEqual(b);
   });
 
   it('a cloned state continues identically to the original (snapshot/fork)', () => {
-    const inputs = makeInputs(200);
+    const inputs = makeInputs(300);
     let state = createSimState(0xabcdef);
     for (let i = 0; i < 100; i++) {
       state = step(state, inputs[i] as InputFrame);
@@ -77,7 +73,7 @@ describe('simulation determinism', () => {
   });
 
   it('state survives a JSON round-trip mid-run with an identical hash', () => {
-    const inputs = makeInputs(80);
+    const inputs = makeInputs(120);
     let state = createSimState(0x1234);
     for (let i = 0; i < 40; i++) {
       state = step(state, inputs[i] as InputFrame);

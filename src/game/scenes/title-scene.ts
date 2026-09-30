@@ -40,6 +40,22 @@ export class TitleScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setName('tagline-text');
 
+    this.add
+      .text(cx, cy + 140, 'TAP / PRESS TO ENTER', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '16px',
+        color: '#64b5ff',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5)
+      .setName('start-prompt');
+
+    const start = (): void => {
+      this.scene.start('GameScene');
+    };
+    this.input.once('pointerdown', start);
+    this.input.keyboard?.once('keydown', start);
+
     // Signal to automated tests (Playwright) that boot completed cleanly.
     this.game.events.emit('title-ready');
   }

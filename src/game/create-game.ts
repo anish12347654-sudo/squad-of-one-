@@ -6,6 +6,7 @@
 import Phaser from 'phaser';
 import { BRANDING } from './branding.js';
 import { TitleScene } from './scenes/title-scene.js';
+import { GameScene } from './scenes/game-scene.js';
 
 export const GAME_WIDTH = 390;
 export const GAME_HEIGHT = 844;
@@ -22,7 +23,7 @@ export function createGame(parent: HTMLElement | string): Phaser.Game {
       width: GAME_WIDTH,
       height: GAME_HEIGHT,
     },
-    scene: [TitleScene],
+    scene: [TitleScene, GameScene],
     // The deterministic sim ignores wall clock; rendering does not need pixel
     // rounding for the M0 title. roundPixels defaults to false in Phaser 4.
     render: {

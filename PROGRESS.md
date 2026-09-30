@@ -31,15 +31,30 @@ inspected.
 - [x] Headless Playwright boots the built app to the title canvas, zero console errors, screenshot captured + inspected
 - [x] Git commit for M0
 
-## M1 - Simulation contracts (frozen before parallel work)
+## M1 - Vertical slice + frozen sim contracts ✅ (complete)
 
-- [ ] Entities, stable ids, deterministic iteration + total-order comparators
-- [ ] Deterministic circle/AABB collision, spatial hash, grid pathfinding
-- [ ] InputFrame recording (RLE typed arrays) + replay playback ("past self")
-- [ ] Replay code encode/decode (seed + recording)
-- [ ] Threat/aggro rules, paradox detection, rewrite semantics
-- [ ] Node-vs-browser hash-parity test on the same replay
-- [ ] Freeze sim API for content work
+- [x] Entities, stable ids, deterministic iteration + total-order comparators (`src/sim/types.ts`, `sim.ts`)
+- [x] Deterministic circle/AABB + line collision (`src/sim/vec.ts`) and a spatial hash (`src/sim/spatial-hash.ts`)
+- [x] InputFrame recording (RLE typed arrays) + replay playback (`src/sim/recording.ts`); round-trip tested
+- [x] Deterministic echo replay through the SAME `step()` path; loop restart contract (`src/sim/level-runner.ts`)
+- [x] Classes Guardian/Medic/Ranger with section-4 numbers (`src/sim/classes.ts` + `src/content/classes.ts`)
+- [x] Threat/aggro rules (damage/heal/taunt, highest-positive, <=1/s re-eval, tie-break lowest id) (`src/sim/threat.ts`)
+- [x] One boss ("The Warden") as a deterministic telegraphed pattern with a phase-1 threshold (`src/content/levels/arena-01.ts`)
+- [x] Win (boss killed) / fail (Timeline Failed -> Restart) flow; boss HP resets each loop
+- [x] Fixed-timestep loop (<=5 ticks/frame), interpolated rendering, visibilitychange pause (`src/game/scenes/game-scene.ts`)
+- [x] Touch (floating joystick + Skill/Dash/Interact) + keyboard (WASD/JKL) -> InputFrame (`src/game/input.ts`)
+- [x] Dev-only tick-exact InputFrame hook (`window.__SQUAD`, `src/game/dev-hook.ts`)
+- [x] Basic HUD: slot timeline, loop timer ring, boss HP + phase tick, threat line, cooldown rings, echo HP bars + badges, YOU outline
+- [x] Invariance Rule test on a dedicated arena (`tests/determinism/invariance.test.ts`)
+- [x] Scripted-bot solution replay wins the arena with >= 1 star (`tests/solutions/`, `scripts/record-solutions.ts`)
+- [x] `npm run lint`, `typecheck`, `test`, `build`, `e2e` all green; screenshots inspected, zero console errors
+- [x] FREEZE sim API for content work (docs/ARCHITECTURE.md "Frozen M1 Contracts")
+- [x] Git commit for M1
+
+> Note: paradox detection, rewrite semantics, replay-code encode/decode and
+> node-vs-browser hash parity move to their proper milestones (M2 paradox/rewrite,
+> M4 replay share). The recording format already reserves the `anchors` field
+> used by M2 paradox detection.
 
 ## M2 - Content & classes
 
