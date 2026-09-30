@@ -7,3 +7,4 @@ e2e/output/
 *.log
 .DS_Store
 .vite/
+.fonttmp/

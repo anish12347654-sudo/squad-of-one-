@@ -13,6 +13,22 @@
     />
     <title>SQUAD OF ONE</title>
     <style>
+      /* Bundled, subsetted OFL fonts (see docs/CREDITS.md). Latin + Devanagari
+         so both English and Hindi render with no tofu. */
+      @font-face {
+        font-family: 'Noto Sans';
+        font-style: normal;
+        font-weight: 400;
+        font-display: swap;
+        src: url('./fonts/NotoSans-subset.woff2') format('woff2');
+      }
+      @font-face {
+        font-family: 'Noto Sans Devanagari';
+        font-style: normal;
+        font-weight: 400;
+        font-display: swap;
+        src: url('./fonts/NotoSansDevanagari-subset.woff2') format('woff2');
+      }
       html,
       body {
         margin: 0;
@@ -22,6 +38,7 @@
         overflow: hidden;
         overscroll-behavior: none;
         touch-action: none;
+        font-family: 'Noto Sans', 'Noto Sans Devanagari', sans-serif;
       }
       #app {
         width: 100vw;

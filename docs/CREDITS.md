@@ -17,10 +17,26 @@
 - sfc32 / mulberry32 PRNGs (public-domain small PRNGs).
 - FNV-1a hash (public domain).
 
-## Art / audio / fonts
+## Fonts
 
-- TBD. CC0/OFL assets (e.g. Noto Sans + Noto Sans Devanagari) will be credited
-  here as they are added in later milestones.
+The game bundles two fonts, subsetted to only the glyphs it renders (Latin +
+the specific Devanagari used by the Hindi UI). Both are licensed under the
+**SIL Open Font License, Version 1.1** (OFL-1.1):
 
-_All third-party assets shipped in the game will be listed here with their
-licenses before release._
+- **Noto Sans** - Copyright 2022 The Noto Project Authors
+  (https://github.com/notofonts/latin-greek-cyrillic). Used for English / Latin
+  text. Shipped as `public/fonts/NotoSans-subset.woff2`.
+- **Noto Sans Devanagari** - Copyright 2022 The Noto Project Authors
+  (https://github.com/notofonts/devanagari). Used for Hindi / Devanagari text.
+  Shipped as `public/fonts/NotoSansDevanagari-subset.woff2`.
+
+The full OFL-1.1 license text is included in `public/fonts/OFL.txt`. The subsets
+are produced by `scripts/subset-fonts.py` (fontTools) from the upstream hinted
+TTFs; regenerating them requires network access to download the source fonts.
+
+## Art / audio
+
+- Audio is fully procedural (WebAudio synthesis); no external audio assets.
+- VFX and UI shapes are drawn procedurally by Phaser; no external art assets yet.
+
+_All third-party assets shipped in the game are listed here with their licenses._

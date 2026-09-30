@@ -14,6 +14,7 @@
     "test:watch": "vitest",
     "e2e": "playwright test",
     "gen:trig": "tsx scripts/gen-trig.ts",
+    "gen:fonts": "python3 scripts/subset-fonts.py",
     "record:solutions": "tsx scripts/record-solutions.ts",
     "gen:icons": "tsx scripts/gen-icons.ts"
   },
