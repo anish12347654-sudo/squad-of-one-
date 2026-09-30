@@ -15,6 +15,7 @@ import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { t, setLocale, tableFor, STRING_KEYS, LOCALES } from '@i18n/index.js';
 import { COSMETICS } from '@meta/index.js';
+import { CAMPAIGN_LEVELS, WORLDS } from '@content/index.js';
 
 describe('locale parity', () => {
   it('every locale defines exactly the master key set', () => {
@@ -73,6 +74,30 @@ describe('data references resolve to i18n keys', () => {
     for (const c of COSMETICS) {
       expect(t(c.nameKey), `${c.id}`).not.toBe(c.nameKey);
     }
+  });
+
+  it('every campaign level name / story / tutorial / world key exists', () => {
+    setLocale('en');
+    for (const w of WORLDS) {
+      expect(t(w.nameKey), w.id).not.toBe(w.nameKey);
+      expect(t(w.bossIntroKey), w.id).not.toBe(w.bossIntroKey);
+    }
+    for (const lvl of CAMPAIGN_LEVELS) {
+      expect(t(lvl.nameKey), `${lvl.id} name`).not.toBe(lvl.nameKey);
+      for (const s of lvl.storyKeys) expect(t(s), `${lvl.id} story`).not.toBe(s);
+      if (lvl.tutorialKey) expect(t(lvl.tutorialKey), `${lvl.id} tutorial`).not.toBe(lvl.tutorialKey);
+    }
+  });
+
+  it('the same keys resolve in Hindi (no silent English fallback)', () => {
+    setLocale('hi');
+    const hi = tableFor('hi');
+    for (const lvl of CAMPAIGN_LEVELS) {
+      expect(hi[lvl.nameKey], `${lvl.id} name hi`).toBeDefined();
+      for (const s of lvl.storyKeys) expect(hi[s], `${lvl.id} story hi`).toBeDefined();
+      if (lvl.tutorialKey) expect(hi[lvl.tutorialKey], `${lvl.id} tut hi`).toBeDefined();
+    }
+    setLocale('en');
   });
 });
 
