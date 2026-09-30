@@ -1,0 +1,34 @@
+{
+  "name": "squad-of-one",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "SQUAD OF ONE - a mobile-first time-loop boss-raid game where every member of your raid team is a recorded past self.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "e2e": "playwright test",
+    "gen:trig": "tsx scripts/gen-trig.ts",
+    "record:solutions": "tsx scripts/record-solutions.ts",
+    "gen:icons": "tsx scripts/gen-icons.ts"
+  },
+  "dependencies": {
+    "phaser": "4.2.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.0",
+    "@types/node": "22.18.9",
+    "eslint": "9.37.0",
+    "prettier": "3.6.2",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.46.0",
+    "vite": "7.3.6",
+    "vitest": "3.2.7"
+  }
+}
