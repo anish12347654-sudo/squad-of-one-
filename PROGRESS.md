@@ -126,6 +126,9 @@ Completed in the M3 continuation (all gates green: lint/typecheck/test(172)/buil
 - [x] E2E gate: boot -> FTE -> finish Tutorial 1 -> localized results, zero
       console errors (dev hook + a real keyboard+touch test); screenshots of
       every screen at 390x844, 844x390, 768x1024, 1920x1080 captured + inspected.
+      Run serialized (`fullyParallel: false`, `workers: 1`, `retries: 2`) so the
+      heavy single-`vite preview` render loop is not starved by parallel
+      contexts; reliably green across repeated `npm run e2e` runs.
 
 ## M4 - Modes & polish
 

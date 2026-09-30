@@ -35,7 +35,7 @@ test('boot -> first-time experience plays and lands on the title menu', async ({
   await canvas.click();
   // The FTE marks seenIntro and hands off to the title menu within ~15 s.
   await page.waitForFunction(() => window.__SQUAD_UI?.scene?.() === 'ui-title', undefined, {
-    timeout: 25_000,
+    timeout: 35_000,
   });
   await page.screenshot({ path: 'e2e/output/m3-fte-title.png' });
   expect(errors.page, errors.page.join('\n')).toEqual([]);
@@ -48,14 +48,14 @@ test('finish Tutorial 1 via the dev hook and reach the localized results screen'
   await page.goto('/?skipIntro=1', { waitUntil: 'load' });
   const canvas = page.locator('#app canvas');
   await expect(canvas).toBeVisible({ timeout: 15_000 });
-  await page.waitForFunction(() => window.__SQUAD_UI?.scene?.() === 'ui-title', undefined, { timeout: 15_000 });
+  await page.waitForFunction(() => window.__SQUAD_UI?.scene?.() === 'ui-title', undefined, { timeout: 30_000 });
   await page.evaluate(() => window.__SQUAD_UI!.startLevel('tut-1'));
-  await page.waitForFunction(() => window.__SQUAD_UI?.scene?.() === 'ui-levelintro', undefined, { timeout: 10_000 });
+  await page.waitForFunction(() => window.__SQUAD_UI?.scene?.() === 'ui-levelintro', undefined, { timeout: 30_000 });
   await page.screenshot({ path: 'e2e/output/m3-tut1-intro.png' });
 
   // Begin the level (launches the GameScene, which installs the dev hook).
   await page.evaluate(() => window.__SQUAD_UI!.beginLevel('tut-1'));
-  await page.waitForFunction(() => typeof window.__SQUAD !== 'undefined', undefined, { timeout: 10_000 });
+  await page.waitForFunction(() => typeof window.__SQUAD !== 'undefined', undefined, { timeout: 30_000 });
 
   const PLAN = ['guardian', 'ranger'] as const;
   for (let i = 0; i < PLAN.length + 4; i++) {
@@ -81,7 +81,7 @@ test('finish Tutorial 1 via the dev hook and reach the localized results screen'
 
   // The GameScene hands off to the localized ResultsScene once resolved.
   await page.waitForFunction(() => window.__SQUAD_UI?.scene?.() === 'ui-results', undefined, {
-    timeout: 15_000,
+    timeout: 30_000,
   });
   await page.waitForTimeout(200);
   await page.screenshot({ path: 'e2e/output/m3-tut1-results.png' });
@@ -106,7 +106,7 @@ test('real keyboard + touch input drives the FTE and menus (no dev hook)', async
 
   // The real tap + key drove the FTE all the way to the title menu.
   await page.waitForFunction(() => window.__SQUAD_UI?.scene?.() === 'ui-title', undefined, {
-    timeout: 25_000,
+    timeout: 35_000,
   });
 
   // Real pointer click on the canvas (a genuine input event) over the World Map
@@ -124,7 +124,7 @@ test('real keyboard + touch input drives the FTE and menus (no dev hook)', async
     await page.mouse.click(bx, by);
   }
   await page.waitForFunction(() => window.__SQUAD_UI?.scene?.() === 'ui-worldmap', undefined, {
-    timeout: 8_000,
+    timeout: 20_000,
   });
 
   expect(errors.page, errors.page.join('\n')).toEqual([]);
@@ -142,7 +142,7 @@ test('multi-viewport screenshots of every screen', async ({ page }) => {
     await page.goto('/?skipIntro=1', { waitUntil: 'load' });
     const canvas = page.locator('#app canvas');
     await expect(canvas).toBeVisible({ timeout: 15_000 });
-    await page.waitForFunction(() => window.__SQUAD_UI?.scene?.() === 'ui-title', undefined, { timeout: 15_000 });
+    await page.waitForFunction(() => window.__SQUAD_UI?.scene?.() === 'ui-title', undefined, { timeout: 30_000 });
     await page.waitForTimeout(250);
     await page.screenshot({ path: `e2e/output/m3-title-${vp.name}.png` });
 
@@ -156,14 +156,14 @@ test('multi-viewport screenshots of every screen', async ({ page }) => {
     ];
     for (const s of screens) {
       await page.evaluate((key) => window.__SQUAD_UI?.start?.(key), s.scene);
-      await page.waitForFunction((key) => window.__SQUAD_UI?.scene?.() === key, s.scene, { timeout: 8_000 });
+      await page.waitForFunction((key) => window.__SQUAD_UI?.scene?.() === key, s.scene, { timeout: 20_000 });
       await page.waitForTimeout(200);
       await page.screenshot({ path: `e2e/output/m3-${s.shot}-${vp.name}.png` });
     }
 
     // Level intro (story + objective + boss title card).
     await page.evaluate(() => window.__SQUAD_UI?.startLevel?.('w1-boss'));
-    await page.waitForFunction(() => window.__SQUAD_UI?.scene?.() === 'ui-levelintro', undefined, { timeout: 8_000 });
+    await page.waitForFunction(() => window.__SQUAD_UI?.scene?.() === 'ui-levelintro', undefined, { timeout: 20_000 });
     await page.waitForTimeout(200);
     await page.screenshot({ path: `e2e/output/m3-levelintro-${vp.name}.png` });
 

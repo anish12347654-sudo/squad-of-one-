@@ -7,9 +7,17 @@ import { defineConfig, devices } from '@playwright/test';
  */
 export default defineConfig({
   testDir: './e2e',
-  fullyParallel: true,
+  // This is a heavy WebGL/canvas game served by a single `vite preview`
+  // instance. Running multiple browser contexts in parallel starves the shared
+  // render loop, so the long multi-viewport screenshot test steals frames from
+  // the tick-exact Tutorial-1 flow and its scene-transition waits time out under
+  // load. Serialize the whole run (one worker, no intra-file parallelism) so
+  // each spec gets the render loop to itself, and keep a couple of retries as
+  // defence-in-depth against residual timing jitter on a loaded machine.
+  fullyParallel: false,
+  workers: 1,
   forbidOnly: !!process.env.CI,
-  retries: 0,
+  retries: 2,
   reporter: [['list']],
   outputDir: './e2e/output',
   use: {
