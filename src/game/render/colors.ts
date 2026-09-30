@@ -16,6 +16,12 @@ export const COLORS = {
   youOutline: 0xffffff,
   text: 0xe8ecff,
   textDim: 0x8a93b8,
+  paradox: 0xff2a4d,
+  paradoxGlow: 0xff6b8a,
+  turret: 0xffd54f,
+  interactable: 0x64ffda,
+  convergence: 0x9fe3ff,
+  shardIcon: 0x64ffda,
 } as const;
 
 /** Interpolate an integer 0xRRGGBB colour between a and b by t in [0,1]. */

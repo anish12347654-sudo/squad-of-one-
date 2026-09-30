@@ -10,6 +10,7 @@
 import {
   BUTTON_SKILL,
   BUTTON_DASH,
+  BUTTON_INTERACT,
   atan2Brads,
   type InputFrame,
   type SimState,
@@ -119,6 +120,108 @@ export function dashOccasionally(input: InputFrame, tick: number): InputFrame {
 }
 
 export type BotController = (state: SimState, slot: number, tick: number) => InputFrame;
+
+// ---------------------------------------------------------------------------
+// M2 bots (used by the 7-slot showcase flow + e2e). All pure + deterministic.
+// ---------------------------------------------------------------------------
+
+/** Generic ranged attacker: keep a standoff, fire on cooldown, skill when up. */
+function rangedBot(state: SimState, slot: number, standoff: number): InputFrame {
+  const me = selfUnit(state, slot);
+  const boss = findBoss(state);
+  if (!me || !boss) return { moveX: 0, moveY: 0, aim: 0, aimActive: false, buttons: 0 };
+  const dx = boss.x - me.x;
+  const dy = boss.y - me.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const aim = bradsToAim(atan2Brads(dy, dx));
+  let moveX = 0;
+  let moveY = 0;
+  if (dist > standoff + 30) {
+    const m = moveToward(me.x, me.y, boss.x, boss.y);
+    moveX = m.moveX;
+    moveY = m.moveY;
+  } else if (dist < standoff - 30) {
+    const m = moveToward(boss.x, boss.y, me.x, me.y);
+    moveX = m.moveX;
+    moveY = m.moveY;
+  }
+  let buttons = 0;
+  if (me.skillCd <= 0) buttons |= BUTTON_SKILL;
+  return { moveX, moveY, aim, aimActive: true, buttons };
+}
+
+/** Generic melee attacker: rush to melee range and swing, skill on cooldown. */
+function meleeBot(state: SimState, slot: number, reach: number): InputFrame {
+  const me = selfUnit(state, slot);
+  const boss = findBoss(state);
+  if (!me || !boss) return { moveX: 0, moveY: 0, aim: 0, aimActive: false, buttons: 0 };
+  const dx = boss.x - me.x;
+  const dy = boss.y - me.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const aim = bradsToAim(atan2Brads(dy, dx));
+  let moveX = 0;
+  let moveY = 0;
+  if (dist > reach) {
+    const m = moveToward(me.x, me.y, boss.x, boss.y);
+    moveX = m.moveX;
+    moveY = m.moveY;
+  }
+  let buttons = 0;
+  if (me.skillCd <= 0) buttons |= BUTTON_SKILL;
+  return { moveX, moveY, aim, aimActive: true, buttons };
+}
+
+export function pyromancerBot(state: SimState, slot: number): InputFrame {
+  return rangedBot(state, slot, 380);
+}
+export function engineerBot(state: SimState, slot: number): InputFrame {
+  return rangedBot(state, slot, 260);
+}
+export function rogueBot(state: SimState, slot: number): InputFrame {
+  return meleeBot(state, slot, 70);
+}
+
+/** Avatar bot: rush the boss, fire Convergence the moment it is charged. */
+export function avatarBot(state: SimState, slot: number): InputFrame {
+  const me = selfUnit(state, slot);
+  const boss = findBoss(state);
+  if (!me || !boss) return { moveX: 0, moveY: 0, aim: 0, aimActive: false, buttons: 0 };
+  const f = meleeBot(state, slot, 90);
+  let buttons = f.buttons;
+  // Skill = Convergence; the sim only fires it when fully charged.
+  buttons |= BUTTON_SKILL;
+  return { ...f, buttons };
+}
+
+/**
+ * A bot that walks to a specific interactable (by defIndex), grabs it, then
+ * fights at range. Used to author anchor recordings for paradox demos/e2e.
+ */
+export function shardGrabberBot(state: SimState, slot: number, defIndex: number): InputFrame {
+  const me = selfUnit(state, slot);
+  if (!me) return { moveX: 0, moveY: 0, aim: 0, aimActive: false, buttons: 0 };
+  const target = state.interactables.find((i) => i.defIndex === defIndex);
+  if (target && !(target.taken && target.kind === 'shard')) {
+    const d = Math.sqrt((target.x - me.x) ** 2 + (target.y - me.y) ** 2);
+    if (d > target.radius - 6) {
+      const m = moveToward(me.x, me.y, target.x, target.y);
+      return { moveX: m.moveX, moveY: m.moveY, aim: 0, aimActive: false, buttons: 0 };
+    }
+    return { moveX: 0, moveY: 0, aim: 0, aimActive: false, buttons: BUTTON_INTERACT };
+  }
+  return rangedBot(state, slot, 360);
+}
+
+/** All class bots, keyed by classId (for the showcase level solver + e2e). */
+export const ALL_BOTS: Record<string, BotController> = {
+  guardian: (s, slot) => guardianBot(s, slot),
+  medic: (s, slot) => medicBot(s, slot),
+  ranger: (s, slot) => rangerBot(s, slot),
+  pyromancer: (s, slot) => pyromancerBot(s, slot),
+  rogue: (s, slot) => rogueBot(s, slot),
+  engineer: (s, slot) => engineerBot(s, slot),
+  avatar: (s, slot) => avatarBot(s, slot),
+};
 
 /** The M1 solution: Guardian tanks, Ranger DPS, Medic sustains. */
 export const ARENA_01_BOTS: Record<string, BotController> = {

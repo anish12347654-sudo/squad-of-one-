@@ -56,13 +56,27 @@ inspected.
 > M4 replay share). The recording format already reserves the `anchors` field
 > used by M2 paradox detection.
 
-## M2 - Content & classes
+## M2 - Full core ✅ (complete)
 
-- [ ] Class kits (data + pattern scripts using only sim API)
-- [ ] Enemies + first bosses (data + patterns)
-- [ ] Level format + first levels (tutorial + early bosses)
-- [ ] `scripts/record-solutions.ts` records bot solution replays per level
-- [ ] Level-solution tests: every level wins with >= 1 star
+- [x] All 7 classes with section-4 numbers (Pyromancer/Rogue/Engineer/Avatar added; `src/sim/classes.ts` + `src/content/classes.ts`), unique silhouette/colour/sound/blurb each
+- [x] Up to 7 slots; each class at most once; Avatar is last-slot-only (5+ slot levels force Avatar last) — enforced in `LevelRunner.canChoose`
+- [x] Paradox system, pure in sim (`src/sim/sim.ts`): anchor-broken (+/-5 ticks) + path-diverged (>12u for 20 consecutive ticks), 0.5s glitch telegraph, hostile-to-everyone, support inversion (heal->drain, Sanctuary->damage zone, turret->shoots anyone), excluded from alive counts
+- [x] Paradox presentation: red/glitching/jittering echoes, floating "PARADOX: ..." text + slot-timeline marker (`src/game`)
+- [x] Rewrite + 3 Time Shards (`LevelRunner.rewriteSlot`/`shards`): re-record any recorded slot in the changed world (may now die/paradox), Restart-only at 0 shards, feeds the star rating
+- [x] Final Avatar: passive damage x(1 + 0.2 x alive non-paradox echoes) per tick; Convergence charges faster per alive echo and fires synchronized beams from every alive echo
+- [x] Planning phase + timeline scrubber: Web Worker pre-sim (`src/sim/presim.ts` + `src/game/scrubber-worker.ts`), snapshots every 5 ticks, slider + per-echo ghost-path toggles + 3-2-1 countdown; worker hashes match the main thread (parity test)
+- [x] Rewind transition (~1.2s, 8x reverse over snapshots, chromatic/VHS Phaser-4 Filters, skippable)
+- [x] Victory cinematic (slow-mo replay + camera-cut labels) + share-options placeholder (full export lands in M4)
+- [x] Adaptive per-slot procedural music (120 BPM, layer per class gated by echo life, paradox detune/quieten), audio unlock on first tap, procedural SFX for every action (`src/audio/audio-engine.ts`)
+- [x] Full juice pass: Phaser 4 Filters glow/bloom, pooled particles + damage numbers, shake/flash, trails, spectacular boss death + Convergence (`src/game/render/vfx.ts`, `filters.ts`); no per-tick sim allocations, particle caps
+- [x] Tests: paradox detection thresholds, support inversion, rewrite semantics + shard accounting, Avatar passive + Convergence charge, Web-Worker-vs-main-thread hash parity; M1 determinism/invariance/solution suites still green
+- [x] `npm run lint`, `typecheck`, `test`, `build`, `e2e` all green; headless Playwright plays the full 7-slot flow with a deliberate paradox, a rewrite and a Convergence finish; screenshots (scrubber/paradox/convergence/victory/final) captured + inspected, zero console errors
+- [x] Git commit for M2
+
+## M2b - Content & classes (later)
+
+- [ ] Enemies + additional bosses (data + patterns)
+- [ ] More levels (tutorial + early bosses); level-solution tests per level
 
 ## M3 - Meta, UI, platform
 

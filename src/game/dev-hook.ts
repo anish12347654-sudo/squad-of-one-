@@ -21,14 +21,22 @@ interface HookableScene {
   pickClass(id: ClassId): void;
   restart(): void;
   fastForward(maxTicks: number): void;
+  skipPlanning(): void;
+  doRewrite(slot: number, newClass?: ClassId): void;
+  driveWithBots(shardSlots?: Record<number, number>): void;
   getPhase(): string;
+  getParadoxCount(): number;
   getRunner(): {
     result: string;
     recordingSlot: number;
+    shards: number;
+    rewritesUsed: number;
     needsClassChoice(): boolean;
+    awaitingDecision(): boolean;
+    canRewrite(): boolean;
     slotClasses: (ClassId | null)[];
-    state: { tick: number; units: { kind: string; hp: number; alive: boolean; slot: number }[] };
-    computeStars(): { count: number; echoesAlive: number; earlyVictory: boolean; won: boolean };
+    state: { tick: number; units: { kind: string; classId: ClassId | null; hp: number; alive: boolean; slot: number; paradox: boolean }[] };
+    computeStars(): { count: number; echoesAlive: number; earlyVictory: boolean; rewritesUsed: number; won: boolean };
   };
   getInput(): { setScriptedSource(s: ((tick: number) => InputFrame) | null): void };
 }
@@ -56,7 +64,7 @@ export interface SquadDevGlobal {
   /** Overall level result. */
   result(): string;
   /** Star breakdown once resolved. */
-  stars(): { count: number; echoesAlive: number; earlyVictory: boolean; won: boolean };
+  stars(): { count: number; echoesAlive: number; earlyVictory: boolean; rewritesUsed: number; won: boolean };
   /** Number of alive echoes right now. */
   echoesAlive(): number;
   /**
@@ -65,6 +73,20 @@ export interface SquadDevGlobal {
    * a class choice is needed. Deterministic; used by e2e to fast-forward.
    */
   fastForward(maxTicks: number): void;
+  /** Skip the planning phase / countdown immediately (dev/e2e). */
+  skipPlanning(): void;
+  /** Rewrite (re-record) a slot, optionally with a new class (dev/e2e). */
+  rewriteSlot(slot: number, newClass?: ClassId): void;
+  /** Whether the runner is awaiting a rewrite/restart decision. */
+  awaitingDecision(): boolean;
+  /** Whether a rewrite is currently available. */
+  canRewrite(): boolean;
+  /** Time Shards remaining. */
+  shards(): number;
+  /** Number of paradox events raised so far this loop. */
+  paradoxCount(): number;
+  /** Install a state-aware bot driver for the live player (dev/e2e). */
+  driveWithBots(shardSlots?: Record<number, number>): void;
 }
 
 declare global {
@@ -91,6 +113,13 @@ export function installDevHook(scene: HookableScene): DevHookApi {
     stars: () => scene.getRunner().computeStars(),
     echoesAlive: () => scene.getRunner().computeStars().echoesAlive,
     fastForward: (maxTicks) => scene.fastForward(maxTicks),
+    skipPlanning: () => scene.skipPlanning(),
+    rewriteSlot: (slot, newClass) => scene.doRewrite(slot, newClass),
+    awaitingDecision: () => scene.getRunner().awaitingDecision(),
+    canRewrite: () => scene.getRunner().canRewrite(),
+    shards: () => scene.getRunner().shards,
+    paradoxCount: () => scene.getParadoxCount(),
+    driveWithBots: (shardSlots) => scene.driveWithBots(shardSlots),
   };
 
   if (typeof window !== 'undefined') {

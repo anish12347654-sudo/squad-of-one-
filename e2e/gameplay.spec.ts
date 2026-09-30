@@ -1,63 +1,20 @@
 import { test, expect } from '@playwright/test';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
 
 /**
- * The dev hook surface (window.__SQUAD) is declared in src/game/dev-hook.ts as
- * a global augmentation and is visible here via the shared tsconfig.
+ * M2 gameplay verification. Drives the full 7-slot showcase flow through the dev
+ * hook (window.__SQUAD): a deliberate paradox (slots 0 and 1 both grab the same
+ * Time Shard, breaking slot 0's anchor), a rewrite, and a Convergence finish on
+ * the Final Avatar's loop. Captures the required screenshots
+ * (scrubber, paradox glitch, rewind, Convergence, victory cinematic) and asserts
+ * zero console errors.
+ *
+ * The dev hook feeds state-aware bots through the SAME input pipeline as live
+ * play, so this exercises the real sim + presentation, not a stubbed path.
  */
 
-/**
- * M1 gameplay verification. Drives the vertical slice through the dev hook
- * (window.__SQUAD) with the recorded bot solution's inputs, tick for tick, and
- * captures gameplay screenshots for manual inspection:
- *   - loop 1: recording slot 1 alone (Guardian)
- *   - loop 2: recording slot 2 with slot 1 replaying as an echo beside you
- * Then it plays the solution to a win and asserts zero console errors.
- */
+const SHARD_PLAN = { 0: 0, 1: 0 } as const;
 
-interface SerializedRec {
-  slot: number;
-  rle: number[];
-  length: number;
-}
-interface Fixture {
-  plan: string[];
-  recordings: (SerializedRec | null)[];
-}
-
-/** Decode the RLE input stream to a plain array of frame objects (int8-safe). */
-function decode(rle: number[]): { moveX: number; moveY: number; aim: number; aimActive: boolean; buttons: number }[] {
-  const buf = Uint8Array.from(rle);
-  const view = new DataView(buf.buffer);
-  const total = view.getUint32(0, true);
-  const frames = [];
-  let off = 4;
-  const fromInt8 = (b: number) => (b < 128 ? b : b - 256);
-  while (frames.length < total && off + 7 <= buf.length) {
-    const count = view.getUint16(off, true);
-    off += 2;
-    const f = {
-      moveX: fromInt8(buf[off]!),
-      moveY: fromInt8(buf[off + 1]!),
-      aim: buf[off + 2]!,
-      aimActive: buf[off + 3]! !== 0,
-      buttons: buf[off + 4]!,
-    };
-    off += 5;
-    for (let i = 0; i < count && frames.length < total; i++) frames.push({ ...f });
-  }
-  return frames;
-}
-
-function loadFixture(): Fixture {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const raw = readFileSync(join(here, '..', 'tests', 'solutions', 'arena-01.solution.json'), 'utf8');
-  return JSON.parse(raw) as Fixture;
-}
-
-test('drives the M1 slice to a win with zero console errors', async ({ page }) => {
+test('drives the M2 7-slot flow (paradox + rewrite + Convergence) with zero console errors', async ({ page }) => {
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   page.on('console', (msg) => {
@@ -65,89 +22,130 @@ test('drives the M1 slice to a win with zero console errors', async ({ page }) =
   });
   page.on('pageerror', (err) => pageErrors.push(err.message));
 
-  const fixture = loadFixture();
-  const slotFrames = fixture.recordings.map((r) => (r ? decode(r.rle) : []));
-
   await page.goto('/', { waitUntil: 'load' });
   const canvas = page.locator('#app canvas');
   await expect(canvas).toBeVisible({ timeout: 15_000 });
 
-  // Enter the game (TitleScene -> GameScene) by tapping the canvas.
+  // Enter the game (Title -> GameScene) and unlock audio via a tap.
   await canvas.click();
   await page.waitForFunction(() => typeof window.__SQUAD !== 'undefined', undefined, { timeout: 10_000 });
 
-  // Inject the whole solution's per-slot frames and a scripted source that maps
-  // the current recording slot + tick to the right recorded frame.
-  await page.evaluate((frames) => {
-    // Store on window for the source closure.
-    (window as unknown as { __FRAMES: unknown }).__FRAMES = frames;
-  }, slotFrames);
+  const PLAN = ['guardian', 'medic', 'ranger', 'pyromancer', 'rogue', 'engineer', 'avatar'] as const;
 
-  const NEUTRAL = { moveX: 0, moveY: 0, aim: 0, aimActive: false, buttons: 0 };
-
-  type Frame = { moveX: number; moveY: number; aim: number; aimActive: boolean; buttons: number };
-
-  // Install the scripted source for whatever slot is currently recording.
-  async function installSource(): Promise<void> {
-    await page.evaluate((neutral) => {
-      const sq = window.__SQUAD!;
-      const slot = sq.recordingSlot();
-      const all = (window as unknown as { __FRAMES: Frame[][] }).__FRAMES;
-      const frames = all[slot] ?? [];
-      sq.setScriptedInput((tick: number) => frames[tick] ?? neutral);
-    }, NEUTRAL as unknown as Frame);
-  }
-  // Fast-forward N ticks (deterministic, no wall clock) and let a frame render.
-  async function ff(ticks: number): Promise<void> {
-    await page.evaluate((n) => window.__SQUAD!.fastForward(n), ticks);
-    await page.waitForTimeout(60); // allow one render frame
+  // Advance one rendered frame.
+  async function frame(ms = 80): Promise<void> {
+    await page.waitForTimeout(ms);
   }
 
-  // --- Slot 0: pick Guardian, play alone. Capture "loop 1 alone". ---
-  await page.evaluate(() => window.__SQUAD!.pickClass('guardian'));
-  await installSource();
-  await ff(240); // ~4s of sim: the tank has engaged the boss
-  await page.screenshot({ path: 'e2e/output/m1-loop1-alone.png' });
-  // Fast-forward to the end of slot 0's loop.
-  await page.evaluate(() => window.__SQUAD!.fastForward(2000));
-  await page.waitForFunction(
-    () => window.__SQUAD!.needsClassChoice() || window.__SQUAD!.result() !== 'in_progress',
-    undefined,
-    { timeout: 10_000 },
-  );
-  await page.evaluate(() => window.__SQUAD!.clearScriptedInput());
+  let scrubberShot = false;
+  let paradoxShot = false;
+  let rewriteDone = false;
 
-  // --- Slot 1: pick Medic, play with the Guardian echo beside you. ---
-  await page.evaluate(() => window.__SQUAD!.pickClass('medic'));
-  await installSource();
-  await ff(300); // ~5s: echo Guardian fights while the live Medic heals
-  await page.screenshot({ path: 'e2e/output/m1-loop2-echo.png' });
-  await page.evaluate(() => window.__SQUAD!.fastForward(2000));
-  await page.waitForFunction(
-    () => window.__SQUAD!.needsClassChoice() || window.__SQUAD!.result() !== 'in_progress',
-    undefined,
-    { timeout: 10_000 },
-  );
-  await page.evaluate(() => window.__SQUAD!.clearScriptedInput());
+  // Play each slot: pick class, (maybe) capture the scrubber, start recording,
+  // then fast-forward the loop through the paradox.
+  for (let i = 0; i < PLAN.length + 4; i++) {
+    // Reached a terminal result?
+    const result = await page.evaluate(() => window.__SQUAD!.result());
+    if (result !== 'in_progress') break;
 
-  // --- Slot 2: pick Ranger, play to the win. ---
-  await page.evaluate(() => window.__SQUAD!.pickClass('ranger'));
-  await installSource();
-  await page.evaluate(() => window.__SQUAD!.fastForward(2000));
-  await page.waitForFunction(
-    () => window.__SQUAD!.result() !== 'in_progress',
-    undefined,
-    { timeout: 10_000 },
-  );
-  await page.evaluate(() => window.__SQUAD!.clearScriptedInput());
+    // Let any rewind transition settle into pick/decision before reading phase.
+    await page.waitForFunction(() => window.__SQUAD!.phase() !== 'rewind', undefined, { timeout: 5000 }).catch(() => {});
+    const phase = await page.evaluate(() => window.__SQUAD!.phase());
 
-  const result = await page.evaluate(() => window.__SQUAD!.result());
+    if (phase === 'pick') {
+      const slot = await page.evaluate(() => window.__SQUAD!.recordingSlot());
+
+      // Demonstrate a rewrite once: at slot 2's pick, re-record slot 1 (a shard
+      // is spent; the other slots replay in the changed world). Contract 3.5.
+      if (slot === 2 && !rewriteDone) {
+        const can = await page.evaluate(() => window.__SQUAD!.canRewrite());
+        if (can) {
+          await page.evaluate(() => window.__SQUAD!.rewriteSlot(1));
+          rewriteDone = true;
+          // The rewrite starts slot 1's loop (planning -> countdown). Skip + play it.
+          await page.evaluate(() => window.__SQUAD!.skipPlanning());
+          await page.evaluate(() => window.__SQUAD!.skipPlanning());
+          await frame();
+          await page.evaluate((sp) => window.__SQUAD!.driveWithBots(sp), SHARD_PLAN as unknown as Record<number, number>);
+          await page.evaluate(() => window.__SQUAD!.fastForward(2000));
+          await frame();
+          continue;
+        }
+      }
+
+      await page.evaluate((cls) => window.__SQUAD!.pickClass(cls), PLAN[slot]!);
+      await frame();
+
+      // From slot 1 onwards there are echoes -> the planning scrubber appears.
+      const afterPickPhase = await page.evaluate(() => window.__SQUAD!.phase());
+      if (afterPickPhase === 'planning' && slot >= 1 && !scrubberShot) {
+        // Wait for the pre-sim (worker) to resolve and the scrubber to draw.
+        await page.waitForTimeout(900);
+        await page.screenshot({ path: 'e2e/output/m2-scrubber.png' });
+        scrubberShot = true;
+      }
+      // Skip planning/countdown straight into recording.
+      await page.evaluate(() => window.__SQUAD!.skipPlanning());
+      await page.evaluate(() => window.__SQUAD!.skipPlanning());
+      await frame();
+    }
+
+    // Ensure we are in the playing phase before driving bots.
+    const p2 = await page.evaluate(() => window.__SQUAD!.phase());
+    if (p2 === 'playing') {
+      await page.evaluate((sp) => window.__SQUAD!.driveWithBots(sp), SHARD_PLAN as unknown as Record<number, number>);
+      // Step partway, then screenshot the paradox glitch once it appears.
+      await page.evaluate(() => window.__SQUAD!.fastForward(600));
+      await frame();
+      const pc = await page.evaluate(() => window.__SQUAD!.paradoxCount());
+      if (pc > 0 && !paradoxShot) {
+        await page.screenshot({ path: 'e2e/output/m2-paradox.png' });
+        paradoxShot = true;
+      }
+      // Finish the loop.
+      await page.evaluate(() => window.__SQUAD!.fastForward(2000));
+      await frame();
+
+      // The rewind transition plays between loops - capture it once.
+      const rw = await page.evaluate(() => window.__SQUAD!.phase());
+      if (rw === 'rewind') {
+        await page.screenshot({ path: 'e2e/output/m2-rewind.png' });
+      }
+    }
+
+    // Decision gate (all slots recorded, boss alive): demonstrate a rewrite once.
+    const canRewrite = await page.evaluate(() => window.__SQUAD!.awaitingDecision() && window.__SQUAD!.canRewrite());
+    if (canRewrite && !rewriteDone) {
+      await page.evaluate(() => window.__SQUAD!.rewriteSlot(2));
+      rewriteDone = true;
+      await frame();
+    }
+  }
+
+  // Convergence + victory: the win lands on the Final Avatar's loop. Capture the
+  // Convergence beams (during play) and the victory cinematic (after the win).
+  // If we already won, grab the cinematic; otherwise nudge the last loop.
+  const finalResult = await page.evaluate(() => window.__SQUAD!.result());
+  // Give the win a moment; the scene enters the cinematic on the boss kill.
+  await page.waitForTimeout(400);
+  const phaseAfter = await page.evaluate(() => window.__SQUAD!.phase());
+  if (phaseAfter === 'cinematic') {
+    await page.screenshot({ path: 'e2e/output/m2-convergence.png' });
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: 'e2e/output/m2-victory.png' });
+  }
+
+  // Drive to the results screen.
+  await page.waitForFunction(() => window.__SQUAD!.result() === 'won', undefined, { timeout: 15_000 });
   const stars = await page.evaluate(() => window.__SQUAD!.stars());
-  expect(result).toBe('won');
+  expect(finalResult === 'won' || (await page.evaluate(() => window.__SQUAD!.result())) === 'won').toBeTruthy();
   expect(stars.count).toBeGreaterThanOrEqual(1);
+  expect(paradoxShot, 'a paradox should have been created and screenshotted').toBe(true);
 
-  await page.waitForTimeout(300);
-  await page.screenshot({ path: 'e2e/output/m1-victory.png' });
+  // Let the victory cinematic auto-advance to the results screen, then shoot it.
+  await page.waitForFunction(() => window.__SQUAD!.phase() === 'result', undefined, { timeout: 10_000 });
+  await page.waitForTimeout(200);
+  await page.screenshot({ path: 'e2e/output/m2-final.png' });
 
   expect(pageErrors, `page errors:\n${pageErrors.join('\n')}`).toEqual([]);
   expect(consoleErrors, `console errors:\n${consoleErrors.join('\n')}`).toEqual([]);

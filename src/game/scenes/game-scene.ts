@@ -1,15 +1,22 @@
 /**
- * GameScene - the M1 vertical slice.
+ * GameScene - the full M2 core loop.
  *
- * Owns a pure LevelRunner and drives it with the fixed-timestep accumulator
- * (<= 5 ticks/frame, slow down never skip). Rendering interpolates between the
- * previous and current sim states for smooth visuals; input is sampled per
- * frame and applied at tick boundaries. Pauses on visibilitychange.
+ * Owns a pure LevelRunner driven by the fixed-timestep accumulator (<= 5
+ * ticks/frame, slow down never skip). Rendering interpolates between the
+ * previous and current sim states. Every simulation-affecting decision goes
+ * through the pure sim; this scene only reads sim state to draw it and turns
+ * device input into InputFrames.
  *
- * Everything simulation-affecting goes through the pure sim; this scene only
- * reads sim state to draw it, and turns device input into InputFrames. A
- * dev-only hook (window.__SQUAD) feeds tick-exact InputFrames through the same
- * pipeline for e2e + solution replays.
+ * Phases (M2):
+ *   pick      - class picker for the current slot
+ *   planning  - timeline scrubber over a Web Worker pre-sim (+ 3-2-1 countdown)
+ *   playing   - live recording of the current slot
+ *   decision  - all slots recorded, no win: rewrite a slot or restart
+ *   rewind    - tape-rewind transition between loops (chromatic/VHS filter)
+ *   cinematic - victory slow-mo replay with camera cuts + labels
+ *   result    - final stars + restart
+ *
+ * Presentation-only juice (shake/flash/slow-mo/particles) never alters sim ticks.
  */
 
 import Phaser from 'phaser';
@@ -21,22 +28,32 @@ import {
   BOSS_RADIUS,
   PHASE1_THRESHOLD,
   classStats,
+  CONVERGENCE_CHARGE,
 } from '@sim/index.js';
-import type { SimState, Unit, ClassId } from '@sim/index.js';
-import { ARENA_01, CLASS_PRESENTATION } from '@content/index.js';
+import type { SimState, Unit, ClassId, ParadoxEvent } from '@sim/index.js';
+import { ARENA_02, CLASS_PRESENTATION } from '@content/index.js';
 import type { LevelDef } from '@sim/index.js';
 import { createInputController, type InputController } from '../input.js';
 import { COLORS } from '../render/colors.js';
 import { installDevHook, type DevHookApi } from '../dev-hook.js';
+import { Vfx } from '../render/vfx.js';
+import { installFilters, type SceneFilters } from '../render/filters.js';
+import { buildPreSimRequest, runPreSimClient, type PreSimRun } from '../presim-client.js';
+import { getAudioEngine, type AudioEngine } from '@audio/audio-engine.js';
+import { ALL_BOTS, shardGrabberBot } from '@content/bots.js';
 
 const MAX_TICKS_PER_FRAME = 5;
 
-type Phase = 'pick' | 'playing' | 'result';
+type Phase = 'pick' | 'planning' | 'playing' | 'decision' | 'rewind' | 'cinematic' | 'result';
+
+/** All classes shown in the picker, in display order. */
+const ALL_CLASSES: ClassId[] = ['guardian', 'medic', 'ranger', 'pyromancer', 'rogue', 'engineer', 'avatar'];
 
 export class GameScene extends Phaser.Scene {
-  private level: LevelDef = ARENA_01;
+  private level: LevelDef = ARENA_02;
   private runner!: LevelRunner;
   private controller!: InputController;
+  private audio!: AudioEngine;
 
   private accumulator = 0;
   private prev!: SimState;
@@ -49,6 +66,8 @@ export class GameScene extends Phaser.Scene {
   private overlay!: Phaser.GameObjects.Container;
   private labels: Phaser.GameObjects.Text[] = [];
   private banner!: Phaser.GameObjects.Text;
+  private vfx!: Vfx;
+  private filters!: SceneFilters;
 
   // World->screen transform.
   private originX = 0;
@@ -57,12 +76,31 @@ export class GameScene extends Phaser.Scene {
 
   private devHook: DevHookApi | null = null;
 
+  // Paradox presentation bookkeeping.
+  private seenParadox = 0;
+  private floatingTexts: { text: string; x: number; y: number; life: number }[] = [];
+  private timelineMarkers: ParadoxEvent[] = [];
+
+  // Planning-phase scrubber state.
+  private preSim: PreSimRun | null = null;
+  private scrubTick = 0;
+  private ghostOn: Set<number> = new Set();
+  private countdown = 0; // ticks remaining in the 3-2-1
+
+  // Loop snapshot ring for the rewind transition + cinematic.
+  private snapshots: SimState[] = [];
+  private rewindIndex = 0;
+  private rewindTimer = 0;
+  private cinematicTimer = 0;
+  private cinematicCuts: { tick: number; label: string }[] = [];
+
   constructor() {
     super({ key: 'GameScene' });
   }
 
   create(): void {
     this.cameras.main.setBackgroundColor(COLORS.bg);
+    this.audio = getAudioEngine();
     setBossPattern(this.level.boss.pattern);
     this.runner = new LevelRunner(this.level);
     this.prev = cloneSimState(this.runner.state);
@@ -70,7 +108,9 @@ export class GameScene extends Phaser.Scene {
 
     this.world = this.add.graphics();
     this.hud = this.add.graphics();
-    this.overlay = this.add.container(0, 0);
+    this.vfx = new Vfx(this, 12);
+    this.filters = installFilters(this.world);
+    this.overlay = this.add.container(0, 0).setDepth(30);
     this.banner = this.add
       .text(this.scale.width / 2, this.scale.height / 2 - 40, '', {
         fontFamily: 'system-ui, sans-serif',
@@ -80,20 +120,22 @@ export class GameScene extends Phaser.Scene {
         align: 'center',
       })
       .setOrigin(0.5)
-      .setDepth(20);
+      .setDepth(31);
 
     this.computeTransform();
     this.showClassPicker();
 
-    // Pause the loop when the tab is hidden (brief 9.4).
     this.game.events.on(Phaser.Core.Events.HIDDEN, this.onHidden, this);
     this.game.events.on(Phaser.Core.Events.VISIBLE, this.onVisible, this);
 
-    // Dev hook for e2e + scripted replays.
+    // Unlock audio on the first pointer/tap (contract 8).
+    this.input.once('pointerdown', () => {
+      this.audio.unlock();
+      this.audio.startMusic();
+    });
+
     this.devHook = installDevHook(this);
-
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.onShutdown, this);
-
     this.game.events.emit('game-ready');
   }
 
@@ -104,7 +146,6 @@ export class GameScene extends Phaser.Scene {
     this.paused = false;
   }
 
-  /** Fit the arena into the viewport with margins. */
   private computeTransform(): void {
     const w = this.scale.width;
     const h = this.scale.height;
@@ -129,173 +170,411 @@ export class GameScene extends Phaser.Scene {
     return u * this.scaleWorld;
   }
 
-  // ---- Class picker ----
+  // ================= Class picker =================
 
   private showClassPicker(): void {
     this.phase = 'pick';
     this.clearOverlay();
     const slot = this.runner.recordingSlot;
-    const used = this.runner.usedClasses();
     const cx = this.scale.width / 2;
 
-    const title = this.add
-      .text(cx, 210, `Record Slot ${slot + 1} of ${this.level.slotCount}`, {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '20px',
-        color: '#e8ecff',
-        fontStyle: 'bold',
-      })
-      .setOrigin(0.5);
-    this.overlay.add(title);
-    const sub = this.add
-      .text(cx, 240, 'Pick a class (each usable once)', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '14px',
-        color: '#8a93b8',
-      })
-      .setOrigin(0.5);
-    this.overlay.add(sub);
+    this.overlayText(cx, 150, `Record Slot ${slot + 1} of ${this.level.slotCount}`, 20, '#e8ecff', true);
+    this.overlayText(cx, 178, `Time Shards: ${this.runner.shards}   ·   pick a class (each usable once)`, 13, '#8a93b8');
+    if (this.runner.canRewrite()) {
+      this.overlayText(cx, 197, 'Tip: you can also spend a Shard to Rewrite an earlier slot from the results screen.', 10, '#64ffda');
+    }
 
-    const ids: ClassId[] = ['guardian', 'medic', 'ranger'];
-    ids.forEach((id, i) => {
+    const startY = 218;
+    const rowH = 78;
+    ALL_CLASSES.forEach((id, i) => {
       const pres = CLASS_PRESENTATION[id];
-      const y = 300 + i * 120;
-      const disabled = used.includes(id);
+      const y = startY + i * rowH;
+      const canPick = this.runner.canChoose(id, slot);
       const card = this.add.graphics();
-      card.fillStyle(disabled ? 0x1a1f30 : 0x1f2740, 1);
-      card.lineStyle(2, disabled ? 0x333c58 : pres.color, 1);
-      card.fillRoundedRect(cx - 150, y - 45, 300, 96, 12);
-      card.strokeRoundedRect(cx - 150, y - 45, 300, 96, 12);
+      card.fillStyle(canPick ? 0x1f2740 : 0x171b28, 1);
+      card.lineStyle(2, canPick ? pres.color : 0x2a3350, 1);
+      card.fillRoundedRect(cx - 165, y - 30, 330, rowH - 12, 10);
+      card.strokeRoundedRect(cx - 165, y - 30, 330, rowH - 12, 10);
       this.overlay.add(card);
+      // Silhouette swatch.
+      const swatch = this.add.graphics();
+      swatch.fillStyle(canPick ? pres.color : 0x3a4358, 1);
+      this.drawSilhouette(swatch, cx - 138, y + 2, 14, pres.silhouette, 0);
+      this.overlay.add(swatch);
 
-      const name = this.add
-        .text(cx - 120, y - 32, `${pres.name}  ·  ${pres.role}`, {
-          fontFamily: 'system-ui, sans-serif',
-          fontSize: '18px',
-          color: disabled ? '#556' : '#e8ecff',
-          fontStyle: 'bold',
-        })
-        .setOrigin(0, 0);
-      this.overlay.add(name);
-      const blurb = this.add
-        .text(cx - 120, y - 6, pres.blurb, {
-          fontFamily: 'system-ui, sans-serif',
-          fontSize: '12px',
-          color: disabled ? '#445' : '#aab',
-          wordWrap: { width: 250 },
-        })
-        .setOrigin(0, 0);
-      this.overlay.add(blurb);
+      this.overlayText(cx - 108, y - 14, `${pres.name}  ·  ${pres.role}`, 15, canPick ? '#e8ecff' : '#556', true, 0);
+      this.overlayText(cx - 108, y + 8, pres.blurb, 11, canPick ? '#aab' : '#445', false, 0, 250);
 
-      if (disabled) {
-        const usedTxt = this.add
-          .text(cx + 120, y - 32, 'used', { fontSize: '12px', color: '#667' })
-          .setOrigin(1, 0);
-        this.overlay.add(usedTxt);
+      if (!canPick) {
+        const reason = this.runner.usedClasses().includes(id) ? 'used' : id === 'avatar' ? 'last slot' : 'locked';
+        this.overlayText(cx + 150, y - 14, reason, 10, '#667', false, 1);
       } else {
-        const hit = this.add
-          .zone(cx, y, 300, 96)
-          .setOrigin(0.5)
-          .setInteractive({ useHandCursor: true });
+        const hit = this.add.zone(cx, y + 2, 330, rowH - 12).setOrigin(0.5).setInteractive({ useHandCursor: true });
         hit.on('pointerdown', () => this.pickClass(id));
         this.overlay.add(hit);
       }
     });
-
     this.banner.setText('');
   }
 
-  /** Public entry so the dev hook can drive class selection. */
+  /** Pick the class for the current recording slot, then enter planning. */
   pickClass(id: ClassId): void {
     if (this.phase !== 'pick') return;
-    if (this.runner.usedClasses().includes(id)) return;
+    if (!this.runner.canChoose(id, this.runner.recordingSlot)) return;
+    this.audio.sfx('ui');
     this.runner.chooseClass(id);
+    this.enterPlanning();
+  }
+
+  // ================= Planning phase / scrubber =================
+
+  private enterPlanning(): void {
+    // If there are no prior recordings to pre-sim, skip straight to countdown.
+    const hasEchoes = this.runner.recordings.some((r, s) => r && s !== this.runner.recordingSlot);
+    if (!hasEchoes) {
+      this.startCountdown();
+      return;
+    }
+    this.phase = 'planning';
+    this.clearOverlay();
+    this.preSim = null;
+    this.scrubTick = 0;
+    this.countdown = 0; // no countdown until the player starts recording
+    const req = buildPreSimRequest(
+      this.level,
+      this.runner.recordingSlot,
+      this.runner.slotClasses,
+      this.runner.recordings,
+    );
+    this.overlayText(this.scale.width / 2, this.scale.height / 2, 'Simulating timeline...', 16, '#8a93b8', true);
+    runPreSimClient(req)
+      .then((run) => {
+        this.preSim = run;
+        if (this.phase === 'planning') this.showScrubber();
+      })
+      .catch(() => this.startCountdown());
+  }
+
+  private showScrubber(): void {
+    if (!this.preSim) return;
+    this.clearOverlay();
+    const cx = this.scale.width / 2;
+    const pre = this.preSim.result;
+    this.overlayText(cx, 150, 'Planning: scrub the timeline', 18, '#e8ecff', true);
+    this.overlayText(
+      cx,
+      176,
+      `pre-sim ${Math.round(this.preSim.elapsedMs)}ms ${this.preSim.usedWorker ? '(worker)' : '(main)'}  ·  final boss HP ${Math.round(pre.finalBossHp)}`,
+      12,
+      '#8a93b8',
+    );
+
+    // Slider track.
+    const trackY = this.scale.height - 170;
+    const trackX0 = 50;
+    const trackX1 = this.scale.width - 50;
+    const track = this.add.graphics();
+    track.fillStyle(0x2a3350, 1);
+    track.fillRoundedRect(trackX0, trackY - 4, trackX1 - trackX0, 8, 4);
+    this.overlay.add(track);
+    // Paradox markers on the timeline.
+    for (const ev of pre.paradoxEvents) {
+      const px = trackX0 + ((trackX1 - trackX0) * ev.tick) / this.level.loopLength;
+      const m = this.add.graphics();
+      m.fillStyle(COLORS.paradox, 1);
+      m.fillCircle(px, trackY, 5);
+      this.overlay.add(m);
+    }
+    const knob = this.add.graphics().setName('scrub-knob');
+    this.overlay.add(knob);
+    this.drawScrubKnob(knob, trackX0, trackX1, trackY);
+
+    const hit = this.add.zone((trackX0 + trackX1) / 2, trackY, trackX1 - trackX0, 44).setOrigin(0.5).setInteractive();
+    hit.on('pointerdown', (p: Phaser.Input.Pointer) => this.scrubTo(p.x, trackX0, trackX1));
+    hit.on('pointermove', (p: Phaser.Input.Pointer) => {
+      if (p.isDown) this.scrubTo(p.x, trackX0, trackX1);
+    });
+    this.overlay.add(hit);
+
+    // Ghost-path toggles.
+    let ty = 206;
+    for (const g of pre.ghostPaths) {
+      const pres = g.classId ? CLASS_PRESENTATION[g.classId] : null;
+      const on = this.ghostOn.has(g.slot);
+      const label = `Ghost path: Slot ${g.slot + 1}${pres ? ' · ' + pres.name : ''}  [${on ? 'ON' : 'off'}]`;
+      const t = this.overlayText(cx, ty, label, 12, on ? '#e8ecff' : '#667', on);
+      const z = this.add.zone(cx, ty, 260, 22).setOrigin(0.5).setInteractive({ useHandCursor: true });
+      z.on('pointerdown', () => {
+        if (this.ghostOn.has(g.slot)) this.ghostOn.delete(g.slot);
+        else this.ghostOn.add(g.slot);
+        this.audio.sfx('ui');
+        this.showScrubber();
+      });
+      this.overlay.add(z);
+      void t;
+      ty += 24;
+    }
+
+    // Start button -> 3-2-1 countdown.
+    const btnY = this.scale.height - 110;
+    this.overlayButton(cx, btnY, 'Start Recording', () => this.startCountdown());
+  }
+
+  private drawScrubKnob(knob: Phaser.GameObjects.Graphics, x0: number, x1: number, y: number): void {
+    knob.clear();
+    const frac = this.scrubTick / this.level.loopLength;
+    const kx = x0 + (x1 - x0) * frac;
+    knob.fillStyle(0x64b5ff, 1);
+    knob.fillCircle(kx, y, 9);
+  }
+
+  private scrubTo(pointerX: number, x0: number, x1: number): void {
+    const frac = Phaser.Math.Clamp((pointerX - x0) / (x1 - x0), 0, 1);
+    this.scrubTick = Math.round(frac * this.level.loopLength);
+    const knob = this.overlay.getByName('scrub-knob') as Phaser.GameObjects.Graphics | null;
+    if (knob) this.drawScrubKnob(knob, x0, x1, this.scale.height - 170);
+  }
+
+  private startCountdown(): void {
+    this.phase = 'planning';
+    this.clearOverlay();
+    this.countdown = 3 * 60; // 3 seconds of 3-2-1
+    this.preSim = null;
+  }
+
+  // ================= Live play =================
+
+  private beginPlaying(): void {
+    this.phase = 'playing';
     this.prev = cloneSimState(this.runner.state);
     this.accumulator = 0;
+    this.snapshots = [cloneSimState(this.runner.state)];
     this.clearOverlay();
-    this.phase = 'playing';
+    this.banner.setText('');
   }
 
-  private clearOverlay(): void {
-    this.overlay.removeAll(true);
-  }
-
-  // ---- Main loop ----
+  // ================= Main loop =================
 
   override update(_time: number, deltaMs: number): void {
     this.controller.sample();
+    const dt = Math.min(deltaMs / 1000, 0.25);
 
-    if (this.phase === 'playing' && !this.paused) {
-      this.accumulator += Math.min(deltaMs / 1000, 0.25);
-      let ticks = 0;
-      while (this.accumulator >= TICK_DT_SECONDS && ticks < MAX_TICKS_PER_FRAME) {
-        this.prev = cloneSimState(this.runner.state);
-        const tick = this.runner.state.tick;
-        const live = this.controller.frameForTick(tick);
-        const result = this.runner.tickWith(live);
-        this.accumulator -= TICK_DT_SECONDS;
-        ticks++;
-        if (this.runner.needsClassChoice()) {
-          // A loop ended without a win: move to the next slot's class pick.
-          this.showClassPicker();
-          this.accumulator = 0;
-          break;
-        }
-        if (result !== 'in_progress') {
-          this.showResult(result);
-          this.accumulator = 0;
-          break;
-        }
-      }
-      if (this.accumulator >= TICK_DT_SECONDS) this.accumulator = 0; // slow down
+    if (this.phase === 'planning' && this.countdown > 0) {
+      this.countdown -= deltaMs / (1000 / 60);
+      if (this.countdown <= 0) this.beginPlaying();
+    } else if (this.phase === 'playing' && !this.paused) {
+      this.stepPlaying(dt);
+    } else if (this.phase === 'rewind') {
+      this.updateRewind(dt);
+    } else if (this.phase === 'cinematic') {
+      this.updateCinematic(dt);
     }
 
     const alpha = this.phase === 'playing' ? this.accumulator / TICK_DT_SECONDS : 0;
     this.draw(alpha);
+    this.vfx.update();
+    this.filters.update(this.phase === 'rewind');
+    this.updateAudioLayers();
   }
+
+  private stepPlaying(dt: number): void {
+    this.accumulator += dt;
+    let ticks = 0;
+    while (this.accumulator >= TICK_DT_SECONDS && ticks < MAX_TICKS_PER_FRAME) {
+      this.prev = cloneSimState(this.runner.state);
+      const tick = this.runner.state.tick;
+      const live = this.controller.frameForTick(tick);
+      const result = this.runner.tickWith(live);
+      this.accumulator -= TICK_DT_SECONDS;
+      ticks++;
+      this.captureSnapshot();
+      this.reactToEvents();
+      if (result !== 'in_progress') {
+        this.onLoopResolved(result);
+        this.accumulator = 0;
+        return;
+      }
+      if (this.runner.needsClassChoice()) {
+        this.startRewind(() => this.showClassPicker());
+        this.accumulator = 0;
+        return;
+      }
+      if (this.runner.awaitingDecision()) {
+        this.startRewind(() => this.showDecision());
+        this.accumulator = 0;
+        return;
+      }
+    }
+    if (this.accumulator >= TICK_DT_SECONDS) this.accumulator = 0; // slow down
+  }
+
+  private captureSnapshot(): void {
+    // Ring buffer of loop snapshots for rewind + cinematic (cap for memory).
+    this.snapshots.push(cloneSimState(this.runner.state));
+    if (this.snapshots.length > this.level.loopLength + 4) this.snapshots.shift();
+  }
+
+  /** Turn newly-raised paradox events + boss death into juice + SFX. */
+  private reactToEvents(): void {
+    const evs = this.runner.state.paradoxEvents;
+    for (let i = this.seenParadox; i < evs.length; i++) {
+      const ev = evs[i]!;
+      this.timelineMarkers.push(ev);
+      // Cap floating texts so repeated paradoxes never stack into an unreadable pile.
+      if (this.floatingTexts.length < 3) {
+        this.floatingTexts.push({ text: `PARADOX: ${ev.detail}`, x: ev.x, y: ev.y + (this.floatingTexts.length * 40 - 40), life: 150 });
+      }
+      this.audio.sfx('paradox');
+      this.vfx.burst(this.wx(ev.x), this.wy(ev.y), COLORS.paradox, 24, 4, 30, 3);
+      this.vfx.shake(this.cameras.main, 200, 0.008);
+    }
+    this.seenParadox = evs.length;
+  }
+
+  private onLoopResolved(result: string): void {
+    if (result === 'won') {
+      // Spectacular boss death, then the victory cinematic.
+      const boss = this.runner.state.units.find((u) => u.kind === 'boss');
+      if (boss) {
+        this.vfx.burst(this.wx(boss.x), this.wy(boss.y), 0xff8a95, 120, 7, 46, 5);
+        this.vfx.burst(this.wx(boss.x), this.wy(boss.y), 0xffffff, 80, 5, 40, 4);
+      }
+      this.vfx.shake(this.cameras.main, 600, 0.02);
+      this.vfx.flash(this.cameras.main, 400, 255, 255, 255);
+      this.audio.sfx('victory');
+      this.startCinematic();
+    } else {
+      // Loop timed out (this slot). Handled by needsClassChoice/awaitingDecision.
+      if (this.runner.result === 'failed') {
+        this.startRewind(() => this.showResult('failed'));
+      }
+    }
+  }
+
+  // ================= Rewind transition =================
+
+  private rewindDone: (() => void) | null = null;
+
+  private startRewind(done: () => void): void {
+    if (this.snapshots.length < 2) {
+      done();
+      return;
+    }
+    this.phase = 'rewind';
+    this.rewindDone = done;
+    this.rewindIndex = this.snapshots.length - 1;
+    this.rewindTimer = 0;
+    this.filters.setRewind(true, 1);
+    this.audio.sfx('paradox'); // tape-rewind-ish sweep
+    this.clearOverlay();
+    this.overlayText(this.scale.width / 2, 120, '<< REWIND', 20, '#9fe3ff', true);
+    this.overlayButton(this.scale.width / 2, this.scale.height - 120, 'Skip >', () => this.finishRewind());
+  }
+
+  private updateRewind(dt: number): void {
+    this.rewindTimer += dt;
+    // ~1.2 s total at 8x reverse over the captured snapshots.
+    const total = 1.2;
+    const frac = Math.min(1, this.rewindTimer / total);
+    this.rewindIndex = Math.max(0, Math.round((1 - frac) * (this.snapshots.length - 1)));
+    if (frac >= 1) this.finishRewind();
+  }
+
+  private finishRewind(): void {
+    this.filters.setRewind(false, 0);
+    const done = this.rewindDone;
+    this.rewindDone = null;
+    this.snapshots = [];
+    if (done) done();
+  }
+
+  // ================= Decision (rewrite / restart) =================
+
+  private showDecision(): void {
+    this.phase = 'decision';
+    this.clearOverlay();
+    const cx = this.scale.width / 2;
+    this.banner.setText('');
+    this.overlayText(cx, 150, 'The boss survived the timeline', 18, '#e8ecff', true);
+    this.overlayText(cx, 178, `Time Shards left: ${this.runner.shards}`, 13, '#8a93b8');
+
+    if (this.runner.canRewrite()) {
+      this.overlayText(cx, 210, 'Rewrite a slot (1 shard) — other slots replay in the changed world:', 12, '#aab');
+      for (let s = 0; s < this.level.slotCount; s++) {
+        const cls = this.runner.slotClasses[s];
+        if (!cls) continue;
+        const pres = CLASS_PRESENTATION[cls];
+        const y = 244 + s * 40;
+        this.overlayButton(cx, y, `Rewrite Slot ${s + 1} · ${pres.name}`, () => this.doRewrite(s), 300, pres.color);
+      }
+    } else {
+      this.overlayText(cx, 220, 'No Time Shards left. Restart the level.', 13, '#e57373');
+    }
+    this.overlayButton(cx, this.scale.height - 120, 'Restart', () => this.restart());
+  }
+
+  doRewrite(slot: number, newClass?: ClassId): void {
+    // A rewrite is allowed at any between-loops gate (pick or decision) per
+    // contract 3.5, as long as the runner says a rewrite is available.
+    if (this.phase !== 'decision' && this.phase !== 'pick') return;
+    if (!this.runner.canRewrite()) return;
+    this.audio.sfx('ui');
+    this.runner.rewriteSlot(slot, newClass);
+    this.seenParadox = 0;
+    this.timelineMarkers = [];
+    this.enterPlanning();
+  }
+
+  // ================= Victory cinematic =================
+
+  private startCinematic(): void {
+    this.phase = 'cinematic';
+    this.cinematicTimer = 0;
+    // Camera cuts on key moments: phase changes, paradoxes, Convergence, blow.
+    this.cinematicCuts = [{ tick: 0, label: 'Timeline complete' }];
+    for (const ev of this.timelineMarkers) {
+      const cls = this.runner.slotClasses[ev.slot];
+      const name = cls ? CLASS_PRESENTATION[cls].name : 'Echo';
+      this.cinematicCuts.push({ tick: ev.tick, label: `Slot ${ev.slot + 1} · ${name} → Paradox` });
+    }
+    this.cinematicCuts.push({ tick: this.runner.state.tick, label: 'The final blow' });
+    this.clearOverlay();
+    this.overlayText(this.scale.width / 2, 110, 'VICTORY REPLAY', 22, '#ffd24a', true);
+    this.overlayButton(this.scale.width / 2, this.scale.height - 120, 'Skip to results >', () => this.showResult('won'));
+  }
+
+  private updateCinematic(dt: number): void {
+    this.cinematicTimer += dt;
+    // ~3.5 s of slow-mo cuts, then results.
+    if (this.cinematicTimer > 3.5) this.showResult('won');
+  }
+
+  // ================= Result =================
 
   private showResult(result: string): void {
     this.phase = 'result';
+    this.clearOverlay();
     const stars = this.runner.computeStars();
+    const cx = this.scale.width / 2;
     if (result === 'won') {
-      const early = stars.earlyVictory ? '  ·  Early Victory!' : '';
-      this.banner.setText(`VICTORY${early}`);
+      this.banner.setText('VICTORY');
       this.drawStars(stars.count);
+      this.overlayText(cx, this.scale.height / 2 + 60, `${stars.echoesAlive} echoes alive · ${stars.rewritesUsed} rewrites`, 13, '#aab');
+      // Share-options placeholder (full clip export lands in M4).
+      this.overlayButton(cx, this.scale.height - 190, 'Share (coming in M4)', () => this.audio.sfx('ui'), 220, 0x39415c);
     } else {
       this.banner.setText('TIMELINE FAILED');
     }
-    // Offer a restart.
-    const cx = this.scale.width / 2;
-    const btn = this.add.graphics();
-    btn.fillStyle(0x2b60ff, 1);
-    btn.fillRoundedRect(cx - 90, this.scale.height - 150, 180, 52, 10);
-    this.overlay.add(btn);
-    const label = this.add
-      .text(cx, this.scale.height - 124, 'Restart', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '18px',
-        color: '#ffffff',
-        fontStyle: 'bold',
-      })
-      .setOrigin(0.5);
-    this.overlay.add(label);
-    const hit = this.add
-      .zone(cx, this.scale.height - 124, 180, 52)
-      .setOrigin(0.5)
-      .setInteractive({ useHandCursor: true });
-    hit.on('pointerdown', () => this.restart());
-    this.overlay.add(hit);
+    this.overlayButton(cx, this.scale.height - 120, 'Restart', () => this.restart());
   }
 
-  /** Draw `count` filled stars (of 3) below the victory banner, as graphics. */
   private drawStars(count: number): void {
     const cx = this.scale.width / 2;
     const y = this.scale.height / 2 + 6;
-    const g = this.add.graphics().setDepth(21);
+    const g = this.add.graphics().setDepth(32);
     for (let i = 0; i < 3; i++) {
       const sx = cx - 44 + i * 44;
-      const filled = i < count;
-      this.starShape(g, sx, y, 15, filled ? 0xffd24a : 0x39415c);
+      this.starShape(g, sx, y, 15, i < count ? 0xffd24a : 0x39415c);
     }
     this.overlay.add(g);
   }
@@ -311,13 +590,11 @@ export class GameScene extends Phaser.Scene {
     g.fillPoints(pts, true);
   }
 
-  /**
-   * Fast-forward the current loop deterministically (dev/e2e only). Steps the
-   * runner without the wall clock, feeding the scripted input source, and
-   * mirrors the update() transitions (class pick / result). No-op unless a
-   * scripted source is installed, so it cannot affect live play.
-   */
+  /** Fast-forward the current loop (dev/e2e only). */
   fastForward(maxTicks: number): void {
+    if (this.phase === 'planning' && this.countdown > 0) {
+      this.beginPlaying();
+    }
     if (this.phase !== 'playing') return;
     if (!this.controller.scripted) return;
     for (let i = 0; i < maxTicks; i++) {
@@ -325,43 +602,94 @@ export class GameScene extends Phaser.Scene {
       const tick = this.runner.state.tick;
       const live = this.controller.frameForTick(tick);
       const result = this.runner.tickWith(live);
+      this.captureSnapshot();
+      this.reactToEvents();
+      if (result !== 'in_progress') {
+        this.onLoopResolved(result);
+        this.accumulator = 0;
+        return;
+      }
       if (this.runner.needsClassChoice()) {
+        this.snapshots = [];
         this.showClassPicker();
         this.accumulator = 0;
         return;
       }
-      if (result !== 'in_progress') {
-        this.showResult(result);
+      if (this.runner.awaitingDecision()) {
+        this.snapshots = [];
+        this.showDecision();
         this.accumulator = 0;
         return;
       }
     }
   }
 
-  /** Restart the whole level (first-pass fail -> Restart; Rewrite is M2). */
+  /** Skip planning/countdown immediately (dev/e2e). */
+  skipPlanning(): void {
+    if (this.phase === 'planning') this.beginPlaying();
+  }
+
+  /**
+   * Install a state-aware bot scripted source for the LIVE player (dev/e2e).
+   * `shardSlots` optionally maps a slot -> interactable defIndex the bot should
+   * grab first (used to author paradox-triggering anchors in the flow).
+   */
+  driveWithBots(shardSlots: Record<number, number> = {}): void {
+    this.controller.setScriptedSource((tick: number) => {
+      const slot = this.runner.recordingSlot;
+      const cls = this.runner.slotClasses[slot];
+      if (!cls) return { moveX: 0, moveY: 0, aim: 0, aimActive: false, buttons: 0 };
+      const shardIdx = shardSlots[slot];
+      if (shardIdx !== undefined) {
+        return shardGrabberBot(this.runner.state, slot, shardIdx);
+      }
+      const bot = ALL_BOTS[cls];
+      return bot ? bot(this.runner.state, slot, tick) : { moveX: 0, moveY: 0, aim: 0, aimActive: false, buttons: 0 };
+    });
+  }
+
   restart(): void {
     setBossPattern(this.level.boss.pattern);
     this.runner = new LevelRunner(this.level);
     this.prev = cloneSimState(this.runner.state);
     this.accumulator = 0;
+    this.seenParadox = 0;
+    this.timelineMarkers = [];
+    this.floatingTexts = [];
+    this.snapshots = [];
     this.controller.setScriptedSource(null);
+    this.filters.setRewind(false, 0);
     this.showClassPicker();
   }
 
-  // ---- Rendering ----
+  // ================= Rendering =================
 
   private draw(alpha: number): void {
     this.world.clear();
     this.hud.clear();
     this.disposeLabels();
 
-    const cur = this.runner.state;
+    // In rewind/cinematic phases we render from the snapshot ring instead of live.
+    let cur = this.runner.state;
+    let prev = this.prev;
+    if (this.phase === 'rewind' && this.snapshots.length > 0) {
+      cur = this.snapshots[Math.min(this.rewindIndex, this.snapshots.length - 1)]!;
+      prev = cur;
+      alpha = 0;
+    }
+
     this.drawArena();
+    if (this.phase === 'planning' && this.preSim) this.drawScrubberWorld();
+    this.drawInteractables(cur);
     this.drawAttacks(cur);
-    this.drawUnits(cur, this.prev, alpha);
-    this.drawProjectiles(cur, this.prev, alpha);
-    this.drawThreatLine(cur, alpha);
+    this.drawTurrets(cur);
+    this.drawUnits(cur, prev, alpha);
+    this.drawProjectiles(cur, prev, alpha);
+    this.drawConvergence(cur);
+    this.drawThreatLine(cur, prev, alpha);
+    this.drawFloatingTexts();
     this.drawHud(cur);
+    if (this.phase === 'planning' && this.countdown > 0) this.drawCountdown();
   }
 
   private disposeLabels(): void {
@@ -371,15 +699,34 @@ export class GameScene extends Phaser.Scene {
 
   private label(x: number, y: number, text: string, size: number, color: string, bold = false): void {
     const t = this.add
-      .text(x, y, text, {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: `${size}px`,
-        color,
-        fontStyle: bold ? 'bold' : 'normal',
-      })
+      .text(x, y, text, { fontFamily: 'system-ui, sans-serif', fontSize: `${size}px`, color, fontStyle: bold ? 'bold' : 'normal' })
       .setOrigin(0.5)
       .setDepth(8);
     this.labels.push(t);
+  }
+
+  private overlayText(x: number, y: number, text: string, size: number, color: string, bold = false, originX = 0.5, wrap?: number): Phaser.GameObjects.Text {
+    const style: Phaser.Types.GameObjects.Text.TextStyle = {
+      fontFamily: 'system-ui, sans-serif',
+      fontSize: `${size}px`,
+      color,
+      fontStyle: bold ? 'bold' : 'normal',
+    };
+    if (wrap) style.wordWrap = { width: wrap };
+    const t = this.add.text(x, y, text, style).setOrigin(originX, 0.5);
+    this.overlay.add(t);
+    return t;
+  }
+
+  private overlayButton(x: number, y: number, text: string, onClick: () => void, width = 200, color = 0x2b60ff): void {
+    const g = this.add.graphics();
+    g.fillStyle(color, 1);
+    g.fillRoundedRect(x - width / 2, y - 24, width, 48, 10);
+    this.overlay.add(g);
+    this.overlayText(x, y, text, 15, '#ffffff', true);
+    const hit = this.add.zone(x, y, width, 48).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    hit.on('pointerdown', onClick);
+    this.overlay.add(hit);
   }
 
   private drawArena(): void {
@@ -419,7 +766,6 @@ export class GameScene extends Phaser.Scene {
         g.fillCircle(sx, sy, r);
         g.fillStyle(COLORS.bossCore, 1);
         g.fillCircle(sx, sy, r * 0.45);
-        // Facing tick.
         const fx = sx + Math.cos((u.facing / 4096) * Math.PI * 2) * r;
         const fy = sy + Math.sin((u.facing / 4096) * Math.PI * 2) * r;
         g.lineStyle(3, 0xffffff, 0.8);
@@ -428,7 +774,6 @@ export class GameScene extends Phaser.Scene {
       }
 
       if (!u.alive) {
-        // Dead player-team unit: faint marker.
         g.fillStyle(0x33384a, 0.5);
         g.fillCircle(sx, sy, this.ws(10));
         continue;
@@ -438,6 +783,25 @@ export class GameScene extends Phaser.Scene {
       const pres = CLASS_PRESENTATION[cls];
       const isYou = u.kind === 'player';
       const r = Math.max(11, this.ws(20));
+
+      if (u.paradox) {
+        // Paradox echo: red, glitching, jittering.
+        const jx = (Math.random() - 0.5) * 6;
+        const jy = (Math.random() - 0.5) * 6;
+        const telegraph = u.paradoxTelegraph > 0;
+        g.fillStyle(COLORS.paradox, telegraph ? 0.5 + Math.random() * 0.4 : 0.9);
+        this.drawSilhouette(g, sx + jx, sy + jy, r, pres.silhouette, u.facing);
+        g.lineStyle(2, COLORS.paradoxGlow, 0.9);
+        g.strokeCircle(sx + jx, sy + jy, r + 4 + Math.random() * 3);
+        // Glitch shards.
+        if (Math.random() < 0.5) {
+          g.fillStyle(COLORS.paradoxGlow, 0.7);
+          g.fillRect(sx + (Math.random() - 0.5) * 30, sy + (Math.random() - 0.5) * 30, 6, 2);
+        }
+        this.label(sx, sy, 'X', 12, '#ffffff', true);
+        continue;
+      }
+
       const alphaFill = isYou ? 1 : 0.55;
       g.fillStyle(pres.color, alphaFill);
       this.drawSilhouette(g, sx, sy, r, pres.silhouette, u.facing);
@@ -445,18 +809,19 @@ export class GameScene extends Phaser.Scene {
         g.lineStyle(3, COLORS.youOutline, 1);
         g.strokeCircle(sx, sy, r + 3);
       }
-      // Sanctuary aura.
       if (u.sanctuaryTicks > 0) {
         g.lineStyle(2, 0x81c784, 0.5);
         g.strokeCircle(sx, sy, r + 8);
       }
-      // Charge indicator (Ranger).
       if (u.chargeTicks > 0) {
         g.lineStyle(3, 0xffe08a, 0.9);
         g.strokeCircle(sx, sy, r + 6);
       }
+      if (u.invulnTicks > 0 && u.invulnHits > 0) {
+        g.lineStyle(2, 0xba68c8, 0.8);
+        g.strokeCircle(sx, sy, r + 10);
+      }
 
-      // Mini HP bar + badge.
       const barW = this.ws(34);
       const bx = sx - barW / 2;
       const by = sy - r - 12;
@@ -471,25 +836,41 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private drawSilhouette(
-    g: Phaser.GameObjects.Graphics,
-    x: number,
-    y: number,
-    r: number,
-    shape: string,
-    facing: number,
-  ): void {
+  private drawSilhouette(g: Phaser.GameObjects.Graphics, x: number, y: number, r: number, shape: string, facing: number): void {
+    const a = (facing / 4096) * Math.PI * 2;
     if (shape === 'shield') {
       g.fillRoundedRect(x - r, y - r, r * 2, r * 2, 4);
     } else if (shape === 'cross') {
-      g.fillCircle(x, y, r);
-    } else {
-      // arrow: triangle pointing along facing.
-      const a = (facing / 4096) * Math.PI * 2;
+      g.fillRect(x - r * 0.35, y - r, r * 0.7, r * 2);
+      g.fillRect(x - r, y - r * 0.35, r * 2, r * 0.7);
+    } else if (shape === 'arrow') {
       const tip = { x: x + Math.cos(a) * r * 1.4, y: y + Math.sin(a) * r * 1.4 };
-      const back1 = { x: x + Math.cos(a + 2.5) * r, y: y + Math.sin(a + 2.5) * r };
-      const back2 = { x: x + Math.cos(a - 2.5) * r, y: y + Math.sin(a - 2.5) * r };
-      g.fillTriangle(tip.x, tip.y, back1.x, back1.y, back2.x, back2.y);
+      const b1 = { x: x + Math.cos(a + 2.5) * r, y: y + Math.sin(a + 2.5) * r };
+      const b2 = { x: x + Math.cos(a - 2.5) * r, y: y + Math.sin(a - 2.5) * r };
+      g.fillTriangle(tip.x, tip.y, b1.x, b1.y, b2.x, b2.y);
+    } else if (shape === 'flame') {
+      g.fillTriangle(x, y - r * 1.3, x - r, y + r, x + r, y + r);
+      g.fillCircle(x, y + r * 0.3, r * 0.6);
+    } else if (shape === 'dagger') {
+      g.fillTriangle(x, y - r * 1.4, x - r * 0.5, y + r, x + r * 0.5, y + r);
+    } else if (shape === 'gear') {
+      g.fillCircle(x, y, r);
+      for (let i = 0; i < 6; i++) {
+        const ga = (i / 6) * Math.PI * 2;
+        g.fillRect(x + Math.cos(ga) * r - 2, y + Math.sin(ga) * r - 2, 5, 5);
+      }
+    } else if (shape === 'diamond') {
+      g.fillPoints(
+        [
+          new Phaser.Math.Vector2(x, y - r * 1.3),
+          new Phaser.Math.Vector2(x + r, y),
+          new Phaser.Math.Vector2(x, y + r * 1.3),
+          new Phaser.Math.Vector2(x - r, y),
+        ],
+        true,
+      );
+    } else {
+      g.fillCircle(x, y, r);
     }
   }
 
@@ -501,14 +882,84 @@ export class GameScene extends Phaser.Scene {
       const iy = pp ? this.lerp(pp.y, p.y, alpha) : p.y;
       const sx = this.wx(ix);
       const sy = this.wy(iy);
-      if (p.piercing) {
-        g.fillStyle(0xffe08a, 1);
-        g.fillCircle(sx, sy, this.ws(7));
-      } else {
+      const hostile = p.hitsEveryone || p.team === 'enemy';
+      if (p.visual === 'meteor') {
+        // Ground telegraph circle while fused.
+        g.lineStyle(2, 0xff7043, 0.9);
+        g.strokeCircle(sx, sy, this.ws(p.aoeRadius ?? 40));
+        g.fillStyle(0xff7043, 0.15);
+        g.fillCircle(sx, sy, this.ws(p.aoeRadius ?? 40));
         g.fillStyle(0xffd27a, 1);
+        g.fillCircle(sx, sy, this.ws(6));
+      } else if (p.piercing || p.visual === 'beam') {
+        g.fillStyle(hostile ? COLORS.paradox : 0xffe08a, 1);
+        g.fillCircle(sx, sy, this.ws(7));
+      } else if (p.visual === 'orb') {
+        g.fillStyle(hostile ? COLORS.paradox : 0xff7043, 1);
+        g.fillCircle(sx, sy, this.ws(6));
+      } else {
+        g.fillStyle(hostile ? COLORS.paradox : 0xffd27a, 1);
         g.fillCircle(sx, sy, this.ws(4));
       }
     }
+  }
+
+  private drawTurrets(cur: SimState): void {
+    const g = this.world;
+    for (const t of cur.turrets) {
+      const sx = this.wx(t.x);
+      const sy = this.wy(t.y);
+      g.fillStyle(t.hostileToAll ? COLORS.paradox : COLORS.turret, 1);
+      g.fillRect(sx - this.ws(10), sy - this.ws(10), this.ws(20), this.ws(20));
+      // Barrel.
+      const fx = sx + Math.cos((t.facing / 4096) * Math.PI * 2) * this.ws(16);
+      const fy = sy + Math.sin((t.facing / 4096) * Math.PI * 2) * this.ws(16);
+      g.lineStyle(3, 0x0b0f1a, 1);
+      g.lineBetween(sx, sy, fx, fy);
+      // HP bar.
+      const barW = this.ws(24);
+      g.fillStyle(COLORS.hpBack, 0.9);
+      g.fillRect(sx - barW / 2, sy - this.ws(16), barW, 3);
+      g.fillStyle(COLORS.hpFill, 1);
+      g.fillRect(sx - barW / 2, sy - this.ws(16), barW * Math.max(0, t.hp / t.maxHp), 3);
+    }
+  }
+
+  private drawInteractables(cur: SimState): void {
+    const g = this.world;
+    for (const it of cur.interactables) {
+      const sx = this.wx(it.x);
+      const sy = this.wy(it.y);
+      if (it.taken && it.kind === 'shard') {
+        g.lineStyle(1, 0x334, 0.5);
+        g.strokeCircle(sx, sy, this.ws(it.radius));
+        continue;
+      }
+      g.fillStyle(COLORS.interactable, 0.85);
+      this.starShape(g, sx, sy, this.ws(10), COLORS.shardIcon);
+      g.lineStyle(1, COLORS.interactable, 0.3);
+      g.strokeCircle(sx, sy, this.ws(it.radius));
+    }
+  }
+
+  private drawConvergence(cur: SimState): void {
+    const g = this.world;
+    const avatar = cur.units.find((u) => u.classId === 'avatar' && u.alive);
+    if (!avatar || avatar.convergeFireTicks <= 0) return;
+    const boss = cur.units.find((u) => u.kind === 'boss');
+    if (!boss) return;
+    const bx = this.wx(boss.x);
+    const by = this.wy(boss.y);
+    // Beam from the Avatar and each alive echo -> boss.
+    for (const u of cur.units) {
+      const beams = (u.classId === 'avatar' && u.alive) || (u.kind === 'echo' && u.alive && !u.paradox);
+      if (!beams) continue;
+      const ux = this.wx(u.x);
+      const uy = this.wy(u.y);
+      g.lineStyle(3 + Math.random() * 2, COLORS.convergence, 0.9);
+      g.lineBetween(ux, uy, bx, by);
+    }
+    this.vfx.burst(bx, by, COLORS.convergence, 6, 5, 20, 3);
   }
 
   private drawAttacks(cur: SimState): void {
@@ -527,7 +978,6 @@ export class GameScene extends Phaser.Scene {
       } else if (a.shape === 'cone') {
         this.drawCone(g, sx, sy, this.ws(a.radius), a.angle, a.halfArc, color, fillAlpha);
       } else {
-        // charge lane
         const ang = (a.angle / 4096) * Math.PI * 2;
         const dx = Math.cos(ang);
         const dy = Math.sin(ang);
@@ -551,16 +1001,7 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private drawCone(
-    g: Phaser.GameObjects.Graphics,
-    x: number,
-    y: number,
-    radius: number,
-    angle: number,
-    halfArc: number,
-    color: number,
-    fillAlpha: number,
-  ): void {
+  private drawCone(g: Phaser.GameObjects.Graphics, x: number, y: number, radius: number, angle: number, halfArc: number, color: number, fillAlpha: number): void {
     const a0 = ((angle - halfArc) / 4096) * Math.PI * 2;
     const a1 = ((angle + halfArc) / 4096) * Math.PI * 2;
     const pts: Phaser.Math.Vector2[] = [new Phaser.Math.Vector2(x, y)];
@@ -573,26 +1014,108 @@ export class GameScene extends Phaser.Scene {
     g.fillPoints(pts, true);
   }
 
-  private drawThreatLine(cur: SimState, alpha: number): void {
+  private drawThreatLine(cur: SimState, prev: SimState, alpha: number): void {
     const boss = cur.units.find((u) => u.kind === 'boss');
     if (!boss || !boss.alive || cur.boss.targetId < 0) return;
     const target = this.unitById(cur, cur.boss.targetId);
     if (!target || !target.alive) return;
-    const pboss = this.unitById(this.prev, boss.id);
+    const pboss = this.unitById(prev, boss.id);
     const bx = this.wx(pboss ? this.lerp(pboss.x, boss.x, alpha) : boss.x);
     const by = this.wy(pboss ? this.lerp(pboss.y, boss.y, alpha) : boss.y);
-    const ptar = this.unitById(this.prev, target.id);
+    const ptar = this.unitById(prev, target.id);
     const tx = this.wx(ptar ? this.lerp(ptar.x, target.x, alpha) : target.x);
     const ty = this.wy(ptar ? this.lerp(ptar.y, target.y, alpha) : target.y);
     this.world.lineStyle(2, COLORS.threatLine, 0.6);
     this.world.lineBetween(bx, by, tx, ty);
   }
 
+  private drawScrubberWorld(): void {
+    if (!this.preSim) return;
+    const g = this.world;
+    const pre = this.preSim.result;
+    // Ghost paths (toggled).
+    for (const gp of pre.ghostPaths) {
+      if (!this.ghostOn.has(gp.slot)) continue;
+      const pres = gp.classId ? CLASS_PRESENTATION[gp.classId] : null;
+      g.lineStyle(1.5, pres ? pres.color : 0x8899aa, 0.6);
+      let started = false;
+      for (let t = 0; t < gp.points.length; t += 2 * 6) {
+        const x = this.wx(gp.points[t]!);
+        const y = this.wy(gp.points[t + 1]!);
+        if (!started) {
+          g.beginPath();
+          g.moveTo(x, y);
+          started = true;
+        } else {
+          g.lineTo(x, y);
+        }
+      }
+      if (started) g.strokePath();
+    }
+    // Snapshot at the scrub position: echoes, HP, boss, telegraphs.
+    const snap = this.nearestSnapshot(pre.snapshots, this.scrubTick);
+    if (snap) {
+      for (const u of snap.units) {
+        const sx = this.wx(u.x);
+        const sy = this.wy(u.y);
+        if (u.kind === 'boss') {
+          g.fillStyle(COLORS.boss, 0.5);
+          g.fillCircle(sx, sy, this.ws(BOSS_RADIUS));
+          continue;
+        }
+        const pres = u.classId ? CLASS_PRESENTATION[u.classId] : null;
+        g.fillStyle(u.paradox ? COLORS.paradox : pres ? pres.color : 0x8899aa, 0.7);
+        this.drawSilhouette(g, sx, sy, Math.max(10, this.ws(18)), pres ? pres.silhouette : 'cross', 0);
+        const barW = this.ws(30);
+        g.fillStyle(COLORS.hpBack, 0.8);
+        g.fillRect(sx - barW / 2, sy - this.ws(24), barW, 3);
+        g.fillStyle(COLORS.hpFill, 1);
+        g.fillRect(sx - barW / 2, sy - this.ws(24), barW * Math.max(0, u.hp / u.maxHp), 3);
+      }
+      for (const tel of snap.telegraphs) {
+        const sx = this.wx(tel.x);
+        const sy = this.wy(tel.y);
+        g.lineStyle(2, tel.telegraph ? COLORS.telegraph : COLORS.telegraphSafe, 0.6);
+        if (tel.shape === 'slam') g.strokeCircle(sx, sy, this.ws(tel.radius));
+      }
+    }
+  }
+
+  private nearestSnapshot(snaps: { tick: number }[], tick: number): (typeof snaps)[number] & { units: { x: number; y: number; hp: number; maxHp: number; kind: string; classId: ClassId | null; paradox: boolean }[]; telegraphs: { shape: string; x: number; y: number; radius: number; telegraph: boolean }[] } {
+    let best = snaps[0];
+    let bestD = Infinity;
+    for (const s of snaps) {
+      const d = Math.abs(s.tick - tick);
+      if (d < bestD) {
+        bestD = d;
+        best = s;
+      }
+    }
+    return best as never;
+  }
+
+  private drawCountdown(): void {
+    const n = Math.ceil(this.countdown / 60);
+    this.label(this.scale.width / 2, this.scale.height / 2, n > 0 ? `${n}` : 'GO', 64, '#ffd24a', true);
+  }
+
+  private drawFloatingTexts(): void {
+    // Floating texts belong to live play; don't stack them over the cinematic.
+    if (this.phase === 'cinematic' || this.phase === 'result') {
+      this.floatingTexts = [];
+      return;
+    }
+    for (const ft of this.floatingTexts) {
+      this.label(this.wx(ft.x), this.wy(ft.y) - (150 - ft.life) * 0.3, ft.text, 12, '#ff6b8a', true);
+      ft.life -= 1;
+    }
+    this.floatingTexts = this.floatingTexts.filter((f) => f.life > 0);
+  }
+
   private drawHud(cur: SimState): void {
     const g = this.hud;
     const w = this.scale.width;
 
-    // --- Boss HP bar with phase ticks (top) ---
     const boss = cur.units.find((u) => u.kind === 'boss');
     if (boss) {
       const bw = w - 80;
@@ -603,78 +1126,80 @@ export class GameScene extends Phaser.Scene {
       const frac = Math.max(0, boss.hp / boss.maxHp);
       g.fillStyle(COLORS.boss, 1);
       g.fillRoundedRect(bx, by, bw * frac, 14, 6);
-      // Phase-1 threshold tick.
       const tickX = bx + bw * PHASE1_THRESHOLD;
       g.lineStyle(2, 0xffffff, 0.8);
       g.lineBetween(tickX, by - 3, tickX, by + 17);
       this.label(w / 2, 25, `THE WARDEN   ${Math.ceil(boss.hp)} / ${boss.maxHp}`, 12, '#e8ecff', true);
     }
 
-    // --- Slot timeline (class icon + alive/dead) top-left under boss bar ---
+    // Slot timeline with paradox markers.
     const slotY = 70;
     for (let s = 0; s < this.level.slotCount; s++) {
-      const sx = 52 + s * 44;
+      const sx = 52 + s * 40;
       const cls = cur.slotClasses[s];
       const unit = cur.units.find((u) => u.slot === s && (u.kind === 'player' || u.kind === 'echo'));
-      const isRecording = s === this.runner.recordingSlot && this.phase !== 'result';
-      g.lineStyle(isRecording ? 3 : 1, isRecording ? 0xffffff : 0x3a4358, 1);
+      const isRecording = s === this.runner.recordingSlot && (this.phase === 'playing' || this.phase === 'planning');
+      const paradox = unit?.paradox === true;
+      g.lineStyle(isRecording ? 3 : 1, isRecording ? 0xffffff : paradox ? COLORS.paradox : 0x3a4358, 1);
       if (cls) {
         const pres = CLASS_PRESENTATION[cls];
         const alive = unit ? unit.alive : true;
-        g.fillStyle(pres.color, alive ? 1 : 0.25);
+        g.fillStyle(paradox ? COLORS.paradox : pres.color, alive ? 1 : 0.25);
       } else {
         g.fillStyle(0x2a3350, 1);
       }
-      g.fillRoundedRect(sx - 16, slotY - 16, 32, 32, 6);
-      g.strokeRoundedRect(sx - 16, slotY - 16, 32, 32, 6);
+      g.fillRoundedRect(sx - 15, slotY - 15, 30, 30, 6);
+      g.strokeRoundedRect(sx - 15, slotY - 15, 30, 30, 6);
       const short = cls ? CLASS_PRESENTATION[cls].name[0] : '·';
-      this.label(sx, slotY, short ?? '·', 14, '#0b0f1a', true);
+      this.label(sx, slotY, paradox ? 'X' : short ?? '·', 13, '#0b0f1a', true);
     }
 
-    // --- Loop timer ring (top-right) ---
+    // Time Shards indicator (top-right, above the loop ring).
+    for (let i = 0; i < this.runner.shards; i++) {
+      const shx = w - 40 - i * 16;
+      this.starShape(g, shx, 44, 6, 0x64ffda);
+    }
+
+    // Loop timer ring.
     const ringX = w - 46;
-    const ringY = 76;
-    const ringR = 20;
+    const ringY = 92;
+    const ringR = 18;
     const tfrac = Math.min(1, cur.tick / cur.loopLength);
     g.lineStyle(4, 0x2a3350, 1);
     g.strokeCircle(ringX, ringY, ringR);
     this.drawStrokeArc(g, ringX, ringY, ringR, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - tfrac), 0x64b5ff, 4);
     const secsLeft = Math.max(0, Math.ceil((cur.loopLength - cur.tick) / 60));
-    this.label(ringX, ringY, `${secsLeft}`, 13, '#e8ecff', true);
+    this.label(ringX, ringY, `${secsLeft}`, 12, '#e8ecff', true);
 
-    // --- Cooldown rings for the live player (bottom) ---
+    // Live player cooldowns + Avatar Convergence charge.
     const you = cur.units.find((u) => u.kind === 'player' && u.alive);
     if (you && you.classId) {
       const stats = classStats(you.classId);
       const baseY = this.scale.height - 70;
       this.drawCooldown(g, this.scale.width - 60, baseY, 26, you.skillCd, stats.skillCd, 0xffcf5a, 'SKL');
       this.drawCooldown(g, this.scale.width - 122, baseY, 24, you.dashCd, stats.dashCd, 0x64b5ff, 'DSH');
+      if (you.classId === 'avatar') {
+        const cfrac = Math.min(1, you.convergeCharge / CONVERGENCE_CHARGE);
+        g.fillStyle(COLORS.hpBack, 1);
+        g.fillRoundedRect(60, this.scale.height - 76, 140, 12, 6);
+        g.fillStyle(COLORS.convergence, 1);
+        g.fillRoundedRect(60, this.scale.height - 76, 140 * cfrac, 12, 6);
+        this.label(130, this.scale.height - 70, cfrac >= 1 ? 'CONVERGENCE READY' : 'CONVERGENCE', 10, '#0b0f1a', true);
+      }
     }
   }
 
-  private drawCooldown(
-    g: Phaser.GameObjects.Graphics,
-    x: number,
-    y: number,
-    r: number,
-    cd: number,
-    max: number,
-    color: number,
-    label: string,
-  ): void {
-    // Base disc.
+  private drawCooldown(g: Phaser.GameObjects.Graphics, x: number, y: number, r: number, cd: number, max: number, color: number, label: string): void {
     g.fillStyle(0x1a2036, 0.95);
     g.fillCircle(x, y, r);
     const ready = cd <= 0 || max <= 0;
     if (ready) {
-      // Ready: bright full ring.
       g.lineStyle(3, color, 1);
       g.strokeCircle(x, y, r);
     } else {
-      // On cooldown: dim ring + a shrinking sweep that empties as it recharges.
       g.lineStyle(3, 0x39415c, 1);
       g.strokeCircle(x, y, r);
-      const frac = cd / max; // 1 -> just used, 0 -> ready
+      const frac = cd / max;
       const start = -Math.PI / 2;
       const end = start + Math.PI * 2 * (1 - frac);
       this.drawStrokeArc(g, x, y, r, start, end, color, 3);
@@ -682,16 +1207,7 @@ export class GameScene extends Phaser.Scene {
     this.label(x, y, label, 9, ready ? '#e8ecff' : '#8a93b8', true);
   }
 
-  private drawStrokeArc(
-    g: Phaser.GameObjects.Graphics,
-    x: number,
-    y: number,
-    r: number,
-    start: number,
-    end: number,
-    color: number,
-    width: number,
-  ): void {
+  private drawStrokeArc(g: Phaser.GameObjects.Graphics, x: number, y: number, r: number, start: number, end: number, color: number, width: number): void {
     if (end <= start) return;
     g.lineStyle(width, color, 0.95);
     g.beginPath();
@@ -699,11 +1215,32 @@ export class GameScene extends Phaser.Scene {
     g.strokePath();
   }
 
+  // ================= Audio layers =================
+
+  private updateAudioLayers(): void {
+    if (!this.audio.isUnlocked) return;
+    const alive = new Map<ClassId, boolean>();
+    const paradox = new Map<ClassId, boolean>();
+    for (const u of this.runner.state.units) {
+      if ((u.kind === 'player' || u.kind === 'echo') && u.classId) {
+        if (u.alive) alive.set(u.classId, true);
+        if (u.paradox) paradox.set(u.classId, true);
+      }
+    }
+    this.audio.setLayerStates(alive, paradox);
+  }
+
+  private clearOverlay(): void {
+    this.overlay.removeAll(true);
+  }
+
   private onShutdown(): void {
     this.game.events.off(Phaser.Core.Events.HIDDEN, this.onHidden, this);
     this.game.events.off(Phaser.Core.Events.VISIBLE, this.onVisible, this);
     this.controller?.destroy();
     this.devHook?.dispose();
+    this.vfx?.destroy();
+    this.audio?.stopMusic();
   }
 
   // Expose for the dev hook.
@@ -715,5 +1252,8 @@ export class GameScene extends Phaser.Scene {
   }
   getPhase(): Phase {
     return this.phase;
+  }
+  getParadoxCount(): number {
+    return this.runner.state.paradoxEvents.length;
   }
 }

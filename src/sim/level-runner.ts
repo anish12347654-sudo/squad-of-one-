@@ -72,6 +72,8 @@ export class LevelRunner {
   rewritesUsed = 0;
   /** True while re-recording an already-recorded slot (a rewrite in progress). */
   rewriting = false;
+  /** The slot to resume recording after a rewrite loop finishes (-1 = none). */
+  private resumeSlot = -1;
 
   private recorder = createRecorder('guardian');
   private echoBuf: Map<number, InputFrame> = new Map();
@@ -206,7 +208,10 @@ export class LevelRunner {
   private finishLoop(won: boolean): void {
     // Finalize this slot's recording.
     this.recordings[this.recordingSlot] = finalizeRecording(this.recorder);
+    const wasRewrite = this.rewriting;
+    const resume = this.resumeSlot;
     this.rewriting = false;
+    this.resumeSlot = -1;
 
     if (won) {
       this.result = 'won';
@@ -214,11 +219,27 @@ export class LevelRunner {
       return;
     }
 
+    // If this was a rewrite that interrupted an un-recorded slot's turn, go back
+    // to that slot so it still gets recorded.
+    if (wasRewrite && resume >= 0 && this.recordings[resume] === null) {
+      this.recordingSlot = resume;
+      return;
+    }
+
     // Advance to the next unrecorded slot if one remains.
-    if (this.recordingSlot + 1 < this.level.slotCount) {
+    if (this.recordingSlot + 1 < this.level.slotCount && this.recordings[this.recordingSlot + 1] === null) {
       this.recordingSlot += 1;
       // Next slot needs a class choice before its loop starts.
       return;
+    }
+    // Find any remaining unrecorded slot.
+    for (let s = 0; s < this.level.slotCount; s++) {
+      if (this.slotClasses[s] === null || this.recordings[s] === null) {
+        if (this.slotClasses[s] === null) {
+          this.recordingSlot = s;
+          return;
+        }
+      }
     }
 
     // All slots recorded without a win. The player may rewrite (if shards
@@ -251,9 +272,23 @@ export class LevelRunner {
     return true;
   }
 
-  /** True when a rewrite is currently allowed (shards remain, all recorded). */
+  /** Count of slots that already have a finalized recording. */
+  private recordedCount(): number {
+    let n = 0;
+    for (let s = 0; s < this.level.slotCount; s++) if (this.recordings[s] !== null) n += 1;
+    return n;
+  }
+
+  /**
+   * True when a rewrite is currently allowed: shards remain, at least one slot
+   * is recorded, and the runner is between loops (awaiting a class pick or a
+   * decision) rather than mid-recording. Contract 3.5 ("after any loop the
+   * player may re-record any existing slot").
+   */
   canRewrite(): boolean {
-    return this.result === 'in_progress' && this.shards > 0 && this.allSlotsRecorded();
+    if (this.result !== 'in_progress' || this.shards <= 0) return false;
+    if (this.recordedCount() < 1) return false;
+    return this.needsClassChoice() || this.awaitingDecision();
   }
 
   /**
@@ -268,6 +303,8 @@ export class LevelRunner {
     if (slot < 0 || slot >= this.level.slotCount) throw new Error('bad slot');
     this.shards -= 1;
     this.rewritesUsed += 1;
+    // Remember an un-recorded slot we should return to after this rewrite loop.
+    this.resumeSlot = this.needsClassChoice() ? this.recordingSlot : -1;
     this.recordingSlot = slot;
     this.rewriting = true;
 
