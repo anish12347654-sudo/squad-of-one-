@@ -30,6 +30,8 @@ import {
 import { getAudioEngine } from '@audio/audio-engine.js';
 import { updateSave, getSave } from './save-context.js';
 import { UI_COLORS } from './ui-kit.js';
+import { mountBackdrop } from './scene-backdrop.js';
+import { fontFamilyForCurrentLocale } from '@i18n/fonts.js';
 import { t } from '@i18n/index.js';
 
 export const SCENE_FTE = 'ui-fte';
@@ -95,6 +97,8 @@ export class FirstTimeExperienceScene extends Phaser.Scene {
     }
     const { width, height } = this.scale;
     this.cameras.main.setBackgroundColor(UI_COLORS.bg);
+    // Premium animated backdrop so the very first impression reads as polished.
+    mountBackdrop(this);
     this.originX = width / 2;
     this.originY = height * 0.42;
     this.scaleWorld = Math.min((width - 60) / (GOLEM_ARENA.halfWidth * 2), (height * 0.5) / (GOLEM_ARENA.halfHeight * 2));
@@ -102,14 +106,15 @@ export class FirstTimeExperienceScene extends Phaser.Scene {
     this.g = this.add.graphics();
     this.caption = this.add
       .text(width / 2, height - 70, '', {
-        fontFamily: 'sans-serif',
-        fontSize: '15px',
+        fontFamily: fontFamilyForCurrentLocale(),
+        fontSize: '16px',
         color: UI_COLORS.text,
         align: 'center',
         wordWrap: { width: width - 40 },
       })
       .setOrigin(0.5)
       .setName('fte-caption');
+    this.caption.setShadow(0, 0, '#64b5ff', 10, true, true);
 
     // Let a tap skip the whole intro (accessibility / returning players).
     const skip = (): void => this.finish();

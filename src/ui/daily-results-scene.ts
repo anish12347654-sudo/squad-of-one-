@@ -7,6 +7,7 @@ import Phaser from 'phaser';
 import { getAudioEngine } from '@audio/audio-engine.js';
 import { updateSave } from './save-context.js';
 import { label, button, drawStars, panel, UI_COLORS } from './ui-kit.js';
+import { mountBackdrop } from './scene-backdrop.js';
 import { t } from '@i18n/index.js';
 import { recordDailyResult } from '@meta/index.js';
 import { campaignLevelById } from '@content/index.js';
@@ -46,6 +47,11 @@ export class DailyResultsScene extends Phaser.Scene {
     this.cameras.main.setBackgroundColor(UI_COLORS.bg);
     const d = this.resultData;
 
+    mountBackdrop(this, {
+      accent: d.won ? UI_COLORS.gold : UI_COLORS.danger,
+      accent2: UI_COLORS.accent2,
+    });
+
     // Record the local best (once).
     updateSave((s) => {
       const res = recordDailyResult(s, d.dateKey, d.score);
@@ -54,9 +60,11 @@ export class DailyResultsScene extends Phaser.Scene {
     });
 
     label(this, cx, height * 0.14, d.won ? 'results.victory' : 'results.defeat', {
-      size: 26,
+      size: 28,
       bold: true,
+      display: true,
       color: d.won ? UI_COLORS.text : UI_COLORS.dangerText,
+      glow: d.won ? UI_COLORS.gold : UI_COLORS.danger,
       name: 'daily-results-title',
     });
     label(this, cx, height * 0.14 + 32, 'daily.title', { size: 13, color: UI_COLORS.textDim });

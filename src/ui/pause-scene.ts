@@ -6,7 +6,7 @@
 
 import Phaser from 'phaser';
 import { getAudioEngine } from '@audio/audio-engine.js';
-import { label, button, UI_COLORS } from './ui-kit.js';
+import { label, button, panel, UI_COLORS } from './ui-kit.js';
 
 export const SCENE_PAUSE = 'ui-pause';
 
@@ -22,8 +22,22 @@ export class PauseScene extends Phaser.Scene {
     const dim = this.add.graphics();
     dim.fillStyle(0x05070d, 0.82);
     dim.fillRect(0, 0, width, height);
+    // Soft accent vignette so the overlay reads as a lit modal, not a flat scrim.
+    dim.fillStyle(UI_COLORS.accent, 0.05);
+    dim.fillCircle(cx, height * 0.42, Math.max(width, height) * 0.5);
 
-    label(this, cx, height * 0.3, 'menu.pause', { size: 30, bold: true, name: 'pause-title' });
+    // A glass card framing the pause menu.
+    const cardW = Math.min(300, width - 60);
+    const cardH = 300;
+    panel(this, cx - cardW / 2, height * 0.3 - 36, cardW, cardH, UI_COLORS.panel, { accent: UI_COLORS.accent });
+
+    label(this, cx, height * 0.3, 'menu.pause', {
+      size: 32,
+      bold: true,
+      display: true,
+      glow: UI_COLORS.accent,
+      name: 'pause-title',
+    });
 
     button(this, cx, height * 0.45, 240, 46, 'menu.resume', () => this.resume(), {
       color: UI_COLORS.accent2,

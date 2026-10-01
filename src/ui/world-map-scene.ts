@@ -10,6 +10,8 @@ import Phaser from 'phaser';
 import { getAudioEngine } from '@audio/audio-engine.js';
 import { getSave } from './save-context.js';
 import { label, button, starPath, UI_COLORS } from './ui-kit.js';
+import { mountBackdrop } from './scene-backdrop.js';
+import { GLOWS, lighten, darken } from '@game/render/colors.js';
 import { CAMPAIGN_LEVELS, WORLDS } from '@content/index.js';
 import { levelStatuses, totalStars, maxStars } from '@meta/index.js';
 import type { LevelStatus } from '@meta/index.js';
@@ -26,10 +28,12 @@ export class WorldMapScene extends Phaser.Scene {
     const cx = width / 2;
     this.cameras.main.setBackgroundColor(UI_COLORS.bg);
 
+    mountBackdrop(this);
+
     const save = getSave();
     const statuses = levelStatuses(save, CAMPAIGN_LEVELS);
 
-    label(this, cx, 32, 'map.title', { size: 24, bold: true, name: 'map-title' });
+    label(this, cx, 32, 'map.title', { size: 26, bold: true, display: true, glow: UI_COLORS.accent, name: 'map-title' });
     label(this, cx, 58, 'map.progress', {
       size: 13,
       color: UI_COLORS.accent2Text,
@@ -47,11 +51,17 @@ export class WorldMapScene extends Phaser.Scene {
     worlds.forEach((world, wi) => {
       const levels = CAMPAIGN_LEVELS.filter((l) => l.worldId === world.id);
       const y = top + wi * rowH;
-      // World header.
+      // World header: a tinted bar with a glowing accent edge for depth.
       const hg = this.add.graphics();
-      hg.fillStyle(world.palette.accent, 0.2);
-      hg.fillRoundedRect(listX, y, listW, 20, 5);
-      label(this, listX + 10, y + 10, world.nameKey, { size: 12, bold: true, origin: 0, align: 'left' });
+      hg.fillStyle(GLOWS.shadow, 0.3);
+      hg.fillRoundedRect(listX + 1, y + 2, listW, 20, 6);
+      hg.fillStyle(darken(world.palette.accent, 0.55), 0.9);
+      hg.fillRoundedRect(listX, y, listW, 20, 6);
+      hg.lineStyle(1.5, world.palette.accent, 0.9);
+      hg.strokeRoundedRect(listX, y, listW, 20, 6);
+      hg.fillStyle(world.palette.accent, 0.9);
+      hg.fillRoundedRect(listX, y, 4, 20, 2);
+      label(this, listX + 12, y + 10, world.nameKey, { size: 12, bold: true, origin: 0, align: 'left' });
 
       // Level nodes laid out left-to-right.
       const gap = 8;
@@ -83,10 +93,34 @@ export class WorldMapScene extends Phaser.Scene {
   ): void {
     const g = this.add.graphics();
     const half = size / 2;
-    g.fillStyle(st.unlocked ? UI_COLORS.panel : 0x121626, 1);
-    g.lineStyle(2, st.unlocked ? accent : UI_COLORS.panelEdge, 1);
-    g.fillRoundedRect(cx - half, cy - half, size, size, 8);
-    g.strokeRoundedRect(cx - half, cy - half, size, size, 8);
+    const left = cx - half;
+    const topY = cy - half;
+
+    // Soft drop shadow lifts the tile off the backdrop.
+    g.fillStyle(GLOWS.shadow, 0.4);
+    g.fillRoundedRect(left + 1.5, topY + 3, size, size, 8);
+
+    if (st.unlocked) {
+      // Accent glow halo + a lit gradient face (lighter top, darker bottom).
+      g.fillStyle(accent, 0.18);
+      g.fillRoundedRect(left - 2, topY - 2, size + 4, size + 4, 10);
+      const steps = 8;
+      const bh = size / steps;
+      for (let i = 0; i < steps; i++) {
+        const tt = i / (steps - 1);
+        const c = i === 0 ? lighten(accent, 0.18) : darken(accent, 0.55 + tt * 0.2);
+        g.fillStyle(c, 1);
+        g.fillRect(left, topY + i * bh, size, bh + 1);
+      }
+      g.lineStyle(2, lighten(accent, 0.2), 1);
+      g.strokeRoundedRect(left, topY, size, size, 8);
+    } else {
+      // Locked tiles stay dim and low-contrast.
+      g.fillStyle(0x121626, 1);
+      g.fillRoundedRect(left, topY, size, size, 8);
+      g.lineStyle(2, UI_COLORS.panelEdge, 1);
+      g.strokeRoundedRect(left, topY, size, size, 8);
+    }
 
     if (st.unlocked) {
       // Three star pips across the bottom of the node.

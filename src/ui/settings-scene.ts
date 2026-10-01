@@ -11,6 +11,8 @@ import { vibrate } from '@platform/index.js';
 import { exportSaveCode, importSaveCode } from '@platform/index.js';
 import { getSave, updateSave, setSave } from './save-context.js';
 import { label, button, UI_COLORS } from './ui-kit.js';
+import { mountBackdrop } from './scene-backdrop.js';
+import { fontFamilyForCurrentLocale } from '@i18n/fonts.js';
 import { LOCALES, t } from '@i18n/index.js';
 import type { SaveSettings } from '@meta/index.js';
 
@@ -26,7 +28,8 @@ export class SettingsScene extends Phaser.Scene {
     const { width, height } = this.scale;
     const cx = width / 2;
     this.cameras.main.setBackgroundColor(UI_COLORS.bg);
-    label(this, cx, 34, 'settings.title', { size: 24, bold: true, name: 'settings-title' });
+    mountBackdrop(this);
+    label(this, cx, 34, 'settings.title', { size: 26, bold: true, display: true, glow: UI_COLORS.accent, name: 'settings-title' });
 
     const listX = Math.max(20, cx - 180);
     const listW = Math.min(360, width - 40);
@@ -103,7 +106,7 @@ export class SettingsScene extends Phaser.Scene {
     b.add(bg);
     // Value is a runtime label (locale endonym / size word), not a static key.
     const vt = this.add
-      .text(0, 0, value, { fontFamily: 'sans-serif', fontSize: '13px', color: UI_COLORS.text })
+      .text(0, 0, value, { fontFamily: fontFamilyForCurrentLocale(), fontSize: '13px', color: UI_COLORS.text })
       .setOrigin(0.5);
     b.add(vt);
     const zone = this.add.zone(0, 0, 112, 28).setOrigin(0.5).setInteractive({ useHandCursor: true });

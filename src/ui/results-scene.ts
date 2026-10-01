@@ -7,8 +7,9 @@
 
 import Phaser from 'phaser';
 import { getAudioEngine } from '@audio/audio-engine.js';
-import { getSave, updateSave } from './save-context.js';
+import { getSave, updateSave, reducedMotion } from './save-context.js';
 import { label, button, drawStars, panel, UI_COLORS } from './ui-kit.js';
+import { mountBackdrop } from './scene-backdrop.js';
 import { levelReward, recordLevelResult, addReplay, nextLevelId } from '@meta/index.js';
 import { CAMPAIGN_LEVELS, campaignLevelById } from '@content/index.js';
 import type { ClassId } from '@sim/index.js';
@@ -51,6 +52,12 @@ export class ResultsScene extends Phaser.Scene {
     this.cameras.main.setBackgroundColor(UI_COLORS.bg);
     const d = this.resultData;
 
+    // Victory tints the backdrop gold-ward; defeat stays on the danger accent.
+    mountBackdrop(this, {
+      accent: d.won ? UI_COLORS.gold : UI_COLORS.danger,
+      accent2: d.won ? UI_COLORS.accent2 : UI_COLORS.danger,
+    });
+
     // Record the outcome into the save (once).
     let reward = { xp: 0, shards: 0 };
     if (d.won) {
@@ -73,17 +80,28 @@ export class ResultsScene extends Phaser.Scene {
       getAudioEngine().sfx('victory');
     }
 
-    label(this, cx, height * 0.16, d.won ? 'results.victory' : 'results.defeat', {
-      size: 28,
+    const resultTitle = label(this, cx, height * 0.16, d.won ? 'results.victory' : 'results.defeat', {
+      size: 30,
       bold: true,
+      display: true,
       color: d.won ? UI_COLORS.text : '#e05a6b',
+      glow: d.won ? UI_COLORS.gold : UI_COLORS.danger,
       name: 'results-title',
     });
+    if (d.won && !reducedMotion()) {
+      resultTitle.setScale(0.8).setAlpha(0);
+      this.tweens.add({ targets: resultTitle, scale: 1, alpha: 1, duration: 460, ease: 'Back.easeOut' });
+    }
 
     const lvl = campaignLevelById(d.levelId);
     if (lvl) label(this, cx, height * 0.16 + 34, lvl.nameKey, { size: 14, color: UI_COLORS.textDim });
 
-    drawStars(this, cx, height * 0.32, d.stars, 3, 22, 12);
+    const stars = drawStars(this, cx, height * 0.32, d.stars, 3, 22, 12);
+    // Victory glow: the stars fade in with a soft shimmer.
+    if (d.won && d.stars > 0 && !reducedMotion()) {
+      stars.setAlpha(0);
+      this.tweens.add({ targets: stars, alpha: 1, duration: 520, delay: 200, ease: 'Quad.easeOut' });
+    }
 
     const pw = Math.min(320, width - 40);
     panel(this, cx - pw / 2, height * 0.42, pw, 150);

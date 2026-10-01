@@ -9,6 +9,7 @@ import Phaser from 'phaser';
 import { getAudioEngine } from '@audio/audio-engine.js';
 import { getSave } from './save-context.js';
 import { label, button, panel, UI_COLORS } from './ui-kit.js';
+import { mountBackdrop } from './scene-backdrop.js';
 import { t } from '@i18n/index.js';
 import { resolveDaily, dateKeyOf, campaignLevelById, scoreDaily } from '@content/index.js';
 import type { DailyChallenge } from '@content/index.js';
@@ -40,8 +41,9 @@ export class DailyScene extends Phaser.Scene {
     const { width, height } = this.scale;
     const cx = width / 2;
     this.cameras.main.setBackgroundColor(UI_COLORS.bg);
+    mountBackdrop(this, { accent: UI_COLORS.gold, accent2: UI_COLORS.accent2 });
 
-    label(this, cx, 40, 'daily.title', { size: 26, bold: true, name: 'daily-title' });
+    label(this, cx, 40, 'daily.title', { size: 28, bold: true, display: true, glow: UI_COLORS.gold, name: 'daily-title' });
     label(this, cx, 70, 'daily.subtitle', { size: 12, color: UI_COLORS.textDim, wrap: width - 40 });
     label(this, cx, 96, 'daily.date', { size: 12, color: UI_COLORS.accentText, params: { date: this.challenge.dateKey } });
 

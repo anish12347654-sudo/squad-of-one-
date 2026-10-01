@@ -9,6 +9,7 @@ import Phaser from 'phaser';
 import { getAudioEngine } from '@audio/audio-engine.js';
 import { getSave, updateSave } from './save-context.js';
 import { label, button, panel, UI_COLORS } from './ui-kit.js';
+import { mountBackdrop } from './scene-backdrop.js';
 import { COSMETICS, buyCosmetic, equipCosmetic } from '@meta/index.js';
 import type { CosmeticCategory } from '@meta/index.js';
 
@@ -25,8 +26,9 @@ export class ShopScene extends Phaser.Scene {
     const { width, height } = this.scale;
     const cx = width / 2;
     this.cameras.main.setBackgroundColor(UI_COLORS.bg);
+    mountBackdrop(this);
 
-    label(this, cx, 34, 'shop.title', { size: 24, bold: true, name: 'shop-title' });
+    label(this, cx, 34, 'shop.title', { size: 26, bold: true, display: true, glow: UI_COLORS.accent, name: 'shop-title' });
     label(this, cx, 62, 'shop.balance', {
       size: 14,
       color: UI_COLORS.accent2Text,

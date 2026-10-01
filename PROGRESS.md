@@ -268,6 +268,41 @@ presentation layer ONLY - `src/sim/**` is byte-identical and all 205 tests
         shows the Orbitron headline + neon backdrop; buttons/panels show
         gradient + glow + depth; Hindi renders without tofu.
 
+- [x] **FEAT-002 - premium menu suite**: applied the frozen kit across EVERY
+      menu scene so none still looks flat. Render-layer only; `src/sim/**`
+      byte-identical; all 205 unit tests + 14 e2e specs + `check:prod` green;
+      initial load 1.64 MB (unchanged - procedural, no new assets).
+  - [x] Shared `src/ui/scene-backdrop.ts`: `mountBackdrop()` wires the frozen
+        animated backdrop (per-frame update + resize + shutdown teardown,
+        reduced-motion aware) and refreshes the camera on create (fixes the
+        GameScene->menu camera-clip-to-right-half case); `createEmblem()` draws
+        the glowing animated time-loop lens brand mark; `staggerIn()` gives a
+        reduced-motion-aware staggered entrance.
+  - [x] **Title**: animated clockwork/rangoli backdrop, Orbitron hero title with
+        neon glow, the glowing animated time-loop lens emblem (ring + core +
+        orbiting echo dots), staggered button entrance. `name:` ids +
+        `title-ready` event intact.
+  - [x] **World map**: gradient node tiles with accent glow for unlocked,
+        dimmed/locked styling, world-accent header bars; still fits all 19
+        levels + 5 worlds on 390x844 under FIT; node interactivity + names
+        preserved.
+  - [x] **Level intro**: cinematic boss title card - Orbitron boss name with the
+        world palette accent + glow, world-tinted backdrop, animated reveal.
+  - [x] **Shop / settings / results / replays / daily / daily-results /
+        time-chess / credits / pause / fte**: shared backdrop, display-font
+        glowing headings, upgraded gradient/glow buttons+panels. Results +
+        daily-results tint gold on victory with a star shimmer; replays keeps
+        the HTML `<input>` overlay; settings sliders/toggles still wired to the
+        save; pause gets a glass card + accent vignette modal; the FTE first
+        impression reads premium while keeping its scripted timing + self-route.
+  - [x] Accessibility: all new backdrops/emblem/entrance honor reduced-motion
+        (static fallback / snapped-in) via the shared save-context setting.
+  - [x] AFTER screenshots across 390x844 / 844x390 / 768x1024 / 1920x1080
+        (`scripts/showcase-static.mjs`) + Hindi (`scripts/showcase-hi.mjs`)
+        captured + inspected: every menu now reads premium (animated backdrop,
+        display-font headings, gradient/glow buttons+panels), none flat; zero
+        console errors.
+
 ## M6 - Stretch
 
 - [ ] Additional bosses/classes/modifiers

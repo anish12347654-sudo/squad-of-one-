@@ -6,6 +6,7 @@
 import Phaser from 'phaser';
 import { getAudioEngine } from '@audio/audio-engine.js';
 import { label, button, panel, UI_COLORS } from './ui-kit.js';
+import { mountBackdrop } from './scene-backdrop.js';
 
 export const SCENE_CREDITS = 'ui-credits';
 
@@ -18,9 +19,10 @@ export class CreditsScene extends Phaser.Scene {
     const { width, height } = this.scale;
     const cx = width / 2;
     this.cameras.main.setBackgroundColor(UI_COLORS.bg);
+    mountBackdrop(this);
 
-    label(this, cx, 40, 'credits.title', { size: 26, bold: true, name: 'credits-title' });
-    label(this, cx, 74, 'brand.title', { size: 18, bold: true, color: UI_COLORS.accentText });
+    label(this, cx, 40, 'credits.title', { size: 28, bold: true, display: true, glow: UI_COLORS.accent, name: 'credits-title' });
+    label(this, cx, 74, 'brand.title', { size: 18, bold: true, display: true, color: UI_COLORS.accentText });
 
     const pw = Math.min(340, width - 40);
     panel(this, cx - pw / 2, height * 0.28, pw, 180);

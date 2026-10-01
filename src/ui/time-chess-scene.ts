@@ -12,6 +12,7 @@
 import Phaser from 'phaser';
 import { getAudioEngine } from '@audio/audio-engine.js';
 import { label, button, panel, UI_COLORS } from './ui-kit.js';
+import { mountBackdrop } from './scene-backdrop.js';
 import { t } from '@i18n/index.js';
 import {
   beginTcLoop,
@@ -80,6 +81,7 @@ export class TimeChessScene extends Phaser.Scene {
 
   create(): void {
     this.cameras.main.setBackgroundColor(UI_COLORS.bg);
+    mountBackdrop(this);
     this.gfx = this.add.graphics().setDepth(1);
     this.bindKeys();
     this.showMenu();
@@ -149,7 +151,7 @@ export class TimeChessScene extends Phaser.Scene {
     const { width, height } = this.scale;
     const cx = width / 2;
 
-    this.hud.push(label(this, cx, 44, 'timechess.title', { size: 26, bold: true, name: 'tc-title' }));
+    this.hud.push(label(this, cx, 44, 'timechess.title', { size: 28, bold: true, display: true, glow: UI_COLORS.accent, name: 'tc-title' }));
     this.hud.push(label(this, cx, 76, 'timechess.subtitle', { size: 12, color: UI_COLORS.textDim, wrap: width - 40 }));
     this.hud.push(label(this, cx, 108, 'timechess.rules', { size: 12, color: UI_COLORS.accent2Text, wrap: width - 40 }));
 
@@ -386,7 +388,7 @@ export class TimeChessScene extends Phaser.Scene {
     const outcome = scoreA === scoreB ? 'timechess.draw' : scoreA > scoreB ? 'timechess.win' : 'timechess.lose';
 
     this.widgets.push(panel(this, cx - 160, height * 0.3, 320, 200));
-    this.hud.push(label(this, cx, height * 0.3 + 30, outcome, { size: 22, bold: true, name: 'tc-outcome' }));
+    this.hud.push(label(this, cx, height * 0.3 + 30, outcome, { size: 24, bold: true, display: true, glow: UI_COLORS.accent, name: 'tc-outcome' }));
     this.hud.push(label(this, cx - 70, height * 0.3 + 76, 'timechess.you', { size: 14, color: UI_COLORS.accentText }));
     this.hud.push(label(this, cx + 70, height * 0.3 + 76, 'timechess.opponent', { size: 14, color: UI_COLORS.dangerText }));
     this.hud.push(this.value(cx - 70, height * 0.3 + 104, `${scoreA}`, UI_COLORS.text, 0.5));

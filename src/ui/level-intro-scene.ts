@@ -8,6 +8,8 @@
 import Phaser from 'phaser';
 import { getAudioEngine } from '@audio/audio-engine.js';
 import { label, button, panel, UI_COLORS } from './ui-kit.js';
+import { mountBackdrop, staggerIn } from './scene-backdrop.js';
+import { reducedMotion } from './save-context.js';
 import { campaignLevelById, worldById } from '@content/index.js';
 
 export const SCENE_LEVELINTRO = 'ui-levelintro';
@@ -34,17 +36,38 @@ export class LevelIntroScene extends Phaser.Scene {
       return;
     }
     const world = worldById(lvl.worldId);
+    const accent = world?.palette.accent ?? UI_COLORS.accent;
 
-    // World-tinted backdrop band.
+    // Shared backdrop, tinted to the world palette so each world reads distinct.
+    mountBackdrop(this, { accent, accent2: UI_COLORS.accent2 });
+
+    // Cinematic title card: a world-accent band framing the boss/level name.
+    const bandY = height * 0.16;
+    const band = this.add.graphics();
+    band.fillStyle(accent, 0.14);
+    band.fillRect(0, bandY, width, 92);
+    band.lineStyle(2, accent, 0.8);
+    band.beginPath();
+    band.moveTo(0, bandY);
+    band.lineTo(width, bandY);
+    band.moveTo(0, bandY + 92);
+    band.lineTo(width, bandY + 92);
+    band.strokePath();
+
+    const title = label(this, cx, height * 0.2, lvl.nameKey, {
+      size: 30,
+      bold: true,
+      display: true,
+      glow: accent,
+      name: 'level-title',
+    });
     if (world) {
-      const band = this.add.graphics();
-      band.fillStyle(world.palette.accent, 0.14);
-      band.fillRect(0, height * 0.16, width, 90);
+      label(this, cx, height * 0.2 + 36, world.nameKey, { size: 14, color: UI_COLORS.textDim });
     }
-
-    label(this, cx, height * 0.2, lvl.nameKey, { size: 28, bold: true, name: 'level-title' });
-    if (world) {
-      label(this, cx, height * 0.2 + 34, world.nameKey, { size: 14, color: UI_COLORS.textDim });
+    // Animated reveal: the boss name card scales/fades in.
+    if (!reducedMotion()) {
+      title.setScale(0.82).setAlpha(0);
+      this.tweens.add({ targets: title, scale: 1, alpha: 1, duration: 420, ease: 'Back.easeOut' });
     }
 
     // Objective line.
@@ -72,14 +95,15 @@ export class LevelIntroScene extends Phaser.Scene {
       });
     }
 
-    button(this, cx, height - 100, 220, 48, 'level.intro.continue', () => this.begin(), {
+    const begin = button(this, cx, height - 100, 220, 48, 'level.intro.continue', () => this.begin(), {
       color: UI_COLORS.accent2,
       name: 'btn-begin',
     });
-    button(this, cx, height - 42, 200, 42, 'menu.back', () => {
+    const back = button(this, cx, height - 42, 200, 42, 'menu.back', () => {
       getAudioEngine().sfx('ui');
       this.scene.start('ui-worldmap');
     });
+    staggerIn(this, [begin.container, back.container], { step: 70 });
 
     this.game.events.emit('levelintro-ready');
   }

@@ -72,11 +72,11 @@ try {
     .waitForFunction(() => window.__SQUAD_UI?.scene?.() === 'ui-title', undefined, {
       timeout: 30000,
     })
-    .catch(() => console.log('title wait timed out, scene=', '' ));
-  await page.waitForTimeout(700);
-  await shoot(page, '02-title');
+    .catch(() => console.log('title wait timed out, scene=', ''));
 
-  for (const [scene, name] of [
+  // Scenes reachable through the UI dev hook by key.
+  const menuScenes = [
+    ['ui-title', '02-title'],
     ['ui-worldmap', '03-world-map'],
     ['ui-shop', '08-shop'],
     ['ui-settings', '09-settings'],
@@ -84,18 +84,67 @@ try {
     ['ui-credits', '11-credits'],
     ['ui-daily', '12-daily-paradox'],
     ['ui-timechess', '13-time-chess'],
-  ]) {
-    await page.evaluate((k) => window.__SQUAD_UI?.start?.(k), scene).catch(() => {});
+  ];
+
+  // Capture the full menu suite at every target viewport.
+  const viewports = [
+    [390, 844, '390x844'],
+    [844, 390, '844x390'],
+    [768, 1024, '768x1024'],
+    [1920, 1080, '1920x1080'],
+  ];
+
+  for (const [vw, vh, tag] of viewports) {
+    await page.setViewportSize({ width: vw, height: vh });
+    await page.waitForTimeout(300);
+    for (const [scene, name] of menuScenes) {
+      await page.evaluate((k) => window.__SQUAD_UI?.start?.(k), scene).catch(() => {});
+      await page.waitForTimeout(650);
+      if ((await page.evaluate(() => window.__SQUAD_UI?.scene?.())) === scene) {
+        await shoot(page, `${name}-${tag}`);
+      }
+    }
+    // Level intro (boss title card) via the dev hook's startLevel.
+    await page.evaluate(() => window.__SQUAD_UI?.startLevel?.('w1-boss')).catch(() => {});
+    await page.waitForTimeout(650);
+    if ((await page.evaluate(() => window.__SQUAD_UI?.scene?.())) === 'ui-levelintro') {
+      await shoot(page, `04-level-intro-${tag}`);
+    }
+    // Results (synthetic victory data): stop active UI scenes, then start it
+    // directly through the game scene manager so we can pass init data.
+    await page
+      .evaluate(() => {
+        const g = window.__SQUAD_GAME;
+        if (!g) return;
+        for (const k of ['ui-title', 'ui-worldmap', 'ui-levelintro', 'ui-timechess', 'ui-daily']) {
+          if (g.scene.isActive(k)) g.scene.stop(k);
+        }
+        g.scene.start('ui-results', {
+          levelId: 'w1-boss',
+          won: true,
+          stars: 3,
+          echoesAlive: 2,
+          earlyVictory: true,
+          rewritesUsed: 0,
+          assistUsed: false,
+          wonOnSlot: 2,
+          masteryClass: null,
+        });
+      })
+      .catch(() => {});
     await page.waitForTimeout(700);
-    if ((await page.evaluate(() => window.__SQUAD_UI?.scene?.())) === scene) {
-      await shoot(page, name);
+    if ((await page.evaluate(() => window.__SQUAD_UI?.scene?.())) === 'ui-results') {
+      await shoot(page, `07-results-${tag}`);
     }
   }
 
-  await page.setViewportSize({ width: 1920, height: 1080 });
-  await page.evaluate((k) => window.__SQUAD_UI?.start?.(k), 'ui-title').catch(() => {});
-  await page.waitForTimeout(800);
-  await shoot(page, '14-title-desktop-1920x1080');
+  // First-time experience (premium first impression): force-replay it.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${BASE}/?fte=1`, { waitUntil: 'load' });
+  await page.locator('#app canvas').waitFor({ state: 'visible', timeout: 15000 });
+  await page.locator('#app canvas').click();
+  await page.waitForTimeout(2500);
+  await shoot(page, '01-first-time-experience');
 
   console.log('CONSOLE_ERRORS:', JSON.stringify(errors));
   await browser.close();
