@@ -119,4 +119,24 @@ export default tseslint.config(
       'no-console': 'off',
     },
   },
+  {
+    // Standalone Node ESM capture/showcase scripts: run under Node with
+    // Playwright driving a real browser, so Node + browser globals are expected.
+    name: 'project/node-scripts',
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+        window: 'readonly',
+        localStorage: 'readonly',
+      },
+    },
+    rules: {
+      'no-console': 'off',
+      'no-empty': 'off',
+    },
+  },
 );

@@ -229,6 +229,45 @@ check:prod / e2e (14 specs). Dev tools verified ABSENT from the shipped bundle.
       (`parity-node.test.ts`) and in real Chromium (`e2e/parity.spec.ts`).
 - [x] Git commit for M5.
 
+## Visual overhaul
+
+A premium art-direction pass over the (functionally complete) game. Render /
+presentation layer ONLY - `src/sim/**` is byte-identical and all 205 tests
+(determinism / parity / level-solution / i18n) stay green.
+
+- [x] **FEAT-001 - frozen visual-kit foundation**: establish + freeze the
+      premium visual kit before any per-scene work (mirrors how M1 froze the
+      sim contracts).
+  - [x] Baseline confirmed green (lint/typecheck/205 tests/build/check:prod);
+        initial load 1.63 MB. BEFORE screenshots captured to
+        `e2e/output/before/`.
+  - [x] **Display font Orbitron** (OFL-1.1): instanced to bold + subsetted
+        (~4.8 KB `Orbitron-subset.woff2`), `@font-face` in `index.html`, loaded
+        via `fonts.ts` (`fontFamilyForDisplay()` + `FONT_FAMILIES`), attributed
+        in `docs/CREDITS.md` + `OFL.txt`. Hindi headings fall back to Noto
+        Devanagari (no tofu, verified by screenshot).
+  - [x] **Gradient-ready palette** (`colors.ts`): `GRADIENTS`/`GLOWS`/`TINTS`
+        + helpers added; flat `COLORS` + `lerpColor` preserved.
+  - [x] **Phaser 4 Filters bloom** (`filters.ts`): tuned Glow + Blur bloom and
+        optional Vignette alongside the existing rewind, `setBloom(intensity)`
+        for the "reduced flashing" a11y setting, try/catch-guarded. Three.js /
+        PixiJS depth layer evaluated and DECLINED (bundle/perf) - see
+        `docs/DECISIONS.md`.
+  - [x] **Premium ui-kit** (`ui-kit.ts`): gradient + shadow + glow + hover/press
+        micro-animation `button()`, glass `panel()`, `display`/`glow` `label()`
+        options, gold-gradient glowing stars - public API, `Button` shape and
+        all `name:` identifiers preserved (new look via optional opts only).
+  - [x] **Shared animated backdrop** (`backdrop.ts`): neon clockwork + rangoli/
+        jaali lattice, frozen create/update/resize/destroy API, reduced-motion
+        static fallback. TitleScene adopts it.
+  - [x] Release bundle within budget after the overhaul: initial load 1.64 MB
+        (+~4.8 KB Orbitron) / budget 5 MB; total 1.69 MB / budget 15 MB.
+  - [x] Frozen visual-kit API surface recorded in `docs/DECISIONS.md` for
+        FEAT-002/003.
+  - [x] AFTER screenshots captured (`scripts/showcase-static.mjs`): title now
+        shows the Orbitron headline + neon backdrop; buttons/panels show
+        gradient + glow + depth; Hindi renders without tofu.
+
 ## M6 - Stretch
 
 - [ ] Additional bosses/classes/modifiers

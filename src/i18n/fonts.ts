@@ -17,8 +17,28 @@ export function fontFamilyForCurrentLocale(): string {
     : "'Noto Sans', 'Noto Sans Devanagari', sans-serif";
 }
 
+/**
+ * CSS font-family string for display headlines/titles.
+ *
+ * For Latin locales this returns the Orbitron sci-fi display face (self-hosted,
+ * subsetted). Orbitron has no Devanagari glyphs, so for the Hindi (devanagari)
+ * locale we gracefully fall back to the Devanagari/Noto family - Hindi headings
+ * keep their locale font and never tofu. The Noto fallbacks are always listed
+ * so any glyph outside the display subset still resolves.
+ */
+export function fontFamilyForDisplay(): string {
+  const meta = currentLocaleMeta();
+  return meta.fontKey === 'devanagari'
+    ? "'Noto Sans Devanagari', 'Noto Sans', sans-serif"
+    : "'Orbitron', 'Noto Sans', 'Noto Sans Devanagari', sans-serif";
+}
+
 /** Font families to preload so first paint has no tofu flash. */
-export const FONT_FAMILIES: readonly string[] = ['Noto Sans', 'Noto Sans Devanagari'];
+export const FONT_FAMILIES: readonly string[] = [
+  'Noto Sans',
+  'Noto Sans Devanagari',
+  'Orbitron',
+];
 
 /**
  * Ensure the bundled fonts are loaded before heavy text rendering. Resolves

@@ -12,6 +12,8 @@ import os
 import sys
 import urllib.request
 from fontTools import subset
+from fontTools.ttLib import TTFont
+from fontTools.varLib import instancer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TMP = os.path.join(ROOT, ".fonttmp")
@@ -22,7 +24,17 @@ I18N = os.path.join(ROOT, "src", "i18n")
 SOURCES = {
     "NotoSans.ttf": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/master/fonts/NotoSans/hinted/ttf/NotoSans-Regular.ttf",
     "NotoSansDevanagari.ttf": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/master/fonts/NotoSansDevanagari/hinted/ttf/NotoSansDevanagari-Regular.ttf",
+    # Orbitron: OFL sci-fi/geometric display face for the Latin headline/title.
+    # Variable (wght) upstream; we instance it to a single bold weight below so
+    # the subset is a plain static face (no runtime variable-font overhead).
+    "Orbitron.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/orbitron/Orbitron%5Bwght%5D.ttf",
 }
+
+# The display font only renders Latin headings/titles (uppercase-leaning), the
+# tagline, mode names and digits - never body copy and never Devanagari. We give
+# it the full printable-ASCII + common-symbol coverage so any heading key can
+# use it without tofu, then subset hard (it stays a few KB).
+DISPLAY_CHARS = set(chr(c) for c in range(0x20, 0x7F)) | set("’‘“”–—…•×→←")
 
 
 def ensure_sources():
@@ -70,6 +82,14 @@ def subset_font(src, dst, chars, layout_features):
     return os.path.getsize(dst)
 
 
+def instance_variable(src, dst, axes):
+    """Pin the variable axes of `src` to fixed values, writing a static TTF."""
+    font = TTFont(src)
+    if "fvar" in font:
+        instancer.instantiateVariableFont(font, axes, inplace=True)
+    font.save(dst)
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     ensure_sources()
@@ -93,9 +113,20 @@ def main():
         os.path.join(OUT, "NotoSansDevanagari-subset.woff2"),
         deva, deva_features)
 
-    total = latin_size + deva_size
+    # Display headline face (Orbitron): instance the variable font to a bold
+    # weight, then subset to the Latin display charset.
+    orbitron_static = os.path.join(TMP, "Orbitron-700.ttf")
+    instance_variable(
+        os.path.join(TMP, "Orbitron.ttf"), orbitron_static, {"wght": 700})
+    display_size = subset_font(
+        orbitron_static,
+        os.path.join(OUT, "Orbitron-subset.woff2"),
+        DISPLAY_CHARS, latin_features)
+
+    total = latin_size + deva_size + display_size
     print(f"Latin subset:      {latin_size:>7} bytes  ({len(latin)} chars)")
     print(f"Devanagari subset: {deva_size:>7} bytes  ({len(deva)} chars)")
+    print(f"Display subset:    {display_size:>7} bytes  ({len(DISPLAY_CHARS)} chars)")
     print(f"Total fonts:       {total:>7} bytes")
     if total > 400 * 1024:
         print("WARNING: font bundle exceeds 400 KB", file=sys.stderr)

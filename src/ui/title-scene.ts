@@ -8,14 +8,17 @@
 
 import Phaser from 'phaser';
 import { getAudioEngine } from '@audio/audio-engine.js';
-import { getSave, applySettings } from './save-context.js';
+import { getSave, applySettings, reducedMotion } from './save-context.js';
 import { label, button, UI_COLORS, starPath } from './ui-kit.js';
+import { createBackdrop, type Backdrop } from '@game/render/backdrop.js';
 import { CAMPAIGN_LEVELS } from '@content/index.js';
 import { nextLevelId } from '@meta/index.js';
 
 export const SCENE_TITLE = 'ui-title';
 
 export class TitleScene extends Phaser.Scene {
+  private backdrop: Backdrop | null = null;
+
   constructor() {
     super({ key: SCENE_TITLE });
   }
@@ -26,13 +29,25 @@ export class TitleScene extends Phaser.Scene {
     const cx = width / 2;
     this.cameras.main.setBackgroundColor(UI_COLORS.bg);
 
+    // Shared animated backdrop (neon clockwork + rangoli/jaali lattice).
+    this.backdrop = createBackdrop(this, { reducedMotion: reducedMotion() });
+    this.events.on(Phaser.Scenes.Events.UPDATE, this.onUpdate, this);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.onShutdown, this);
+    this.scale.on(Phaser.Scale.Events.RESIZE, this.onResize, this);
+
     // Decorative emblem: a vector star ring (no glyph tofu).
     const emblem = this.add.graphics();
     emblem.fillStyle(UI_COLORS.accent, 0.12);
     starPath(emblem, cx, height * 0.2, 70, 30);
     emblem.fillPath();
 
-    label(this, cx, height * 0.2, 'brand.title', { size: 40, bold: true, name: 'title-text' });
+    label(this, cx, height * 0.2, 'brand.title', {
+      size: 40,
+      bold: true,
+      name: 'title-text',
+      display: true,
+      glow: UI_COLORS.accent,
+    });
     label(this, cx, height * 0.2 + 46, 'brand.tagline', {
       size: 16,
       color: UI_COLORS.textDim,
@@ -73,6 +88,21 @@ export class TitleScene extends Phaser.Scene {
     this.input.keyboard?.once('keydown', unlock);
 
     this.game.events.emit('title-ready');
+  }
+
+  private onUpdate(_time: number, delta: number): void {
+    this.backdrop?.update(delta);
+  }
+
+  private onResize(gameSize: Phaser.Structs.Size): void {
+    this.backdrop?.resize(gameSize.width, gameSize.height);
+  }
+
+  private onShutdown(): void {
+    this.events.off(Phaser.Scenes.Events.UPDATE, this.onUpdate, this);
+    this.scale.off(Phaser.Scale.Events.RESIZE, this.onResize, this);
+    this.backdrop?.destroy();
+    this.backdrop = null;
   }
 
   private goMap(): void {

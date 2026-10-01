@@ -55,6 +55,22 @@ export function applySettings(s: SaveSettings): void {
   });
 }
 
+/**
+ * True when the "reduced flashing" accessibility setting is on. Presentation
+ * code scales down bloom/glow pulsing and flashing so it stays comfortable.
+ */
+export function reducedFlashing(): boolean {
+  return save.settings.reducedFlashing === true;
+}
+
+/**
+ * True when motion should be reduced (we reuse the reduced-flashing setting as
+ * the reduced-motion signal). Micro-animations fall back to a static look.
+ */
+export function reducedMotion(): boolean {
+  return save.settings.reducedFlashing === true;
+}
+
 /** Multiplier applied to on-screen text for the text-size accessibility option. */
 export function textScale(): number {
   switch (save.settings.textSize) {

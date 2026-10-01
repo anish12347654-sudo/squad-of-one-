@@ -19,9 +19,9 @@
 
 ## Fonts
 
-The game bundles two fonts, subsetted to only the glyphs it renders (Latin +
-the specific Devanagari used by the Hindi UI). Both are licensed under the
-**SIL Open Font License, Version 1.1** (OFL-1.1):
+The game bundles three fonts, subsetted to only the glyphs it renders (Latin +
+the specific Devanagari used by the Hindi UI + a Latin headline face). All are
+licensed under the **SIL Open Font License, Version 1.1** (OFL-1.1):
 
 - **Noto Sans** - Copyright 2022 The Noto Project Authors
   (https://github.com/notofonts/latin-greek-cyrillic). Used for English / Latin
@@ -29,6 +29,11 @@ the specific Devanagari used by the Hindi UI). Both are licensed under the
 - **Noto Sans Devanagari** - Copyright 2022 The Noto Project Authors
   (https://github.com/notofonts/devanagari). Used for Hindi / Devanagari text.
   Shipped as `public/fonts/NotoSansDevanagari-subset.woff2`.
+- **Orbitron** - Copyright 2018 The Orbitron Project Authors
+  (https://github.com/theleagueof/orbitron). A geometric sci-fi display face
+  used for the Latin title/headlines only (Hindi headlines fall back to Noto
+  Sans Devanagari). The upstream variable font is instanced to a single bold
+  weight and subsetted. Shipped as `public/fonts/Orbitron-subset.woff2`.
 
 The full OFL-1.1 license text is included in `public/fonts/OFL.txt`. The subsets
 are produced by `scripts/subset-fonts.py` (fontTools) from the upstream hinted
