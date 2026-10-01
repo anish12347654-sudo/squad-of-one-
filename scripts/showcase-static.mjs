@@ -142,22 +142,36 @@ try {
   // through the __SQUAD gameplay hook: pick classes, skip planning, drive bots,
   // and capture a mid-combat frame plus the victory crescendo.
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.evaluate(() => window.__SQUAD_UI?.beginLevel?.('w1-boss')).catch(() => {});
+  // Reload fresh at the final viewport before entering the GameScene. Cycling
+  // through four viewports above leaves Phaser's FIT scale manager measured
+  // against a prior (wider) viewport, which clips the GameScene camera to a
+  // fraction of the frame on scene-entry (the documented
+  // camera-resize-on-scene-return issue). A fresh page load sizes the canvas to
+  // the current viewport, so the gameplay/Convergence capture renders
+  // full-frame exactly as a real device load does.
+  // Deep-link straight into the GameScene at page load (main.ts boots the scene
+  // once, sizing the canvas to the current viewport). Entering gameplay via a
+  // UI->GameScene transition instead triggers the documented
+  // camera-resize-on-scene-return clip; a fresh deep-link renders full-frame
+  // exactly as a real device load does.
+  await page.goto(`${BASE}/?scene=game&skipIntro=1`, { waitUntil: 'load' });
+  await page.locator('#app canvas').waitFor({ state: 'visible', timeout: 15000 });
   await page
     .waitForFunction(() => typeof window.__SQUAD !== 'undefined', undefined, { timeout: 30000 })
     .catch(() => console.log('gameplay hook wait timed out'));
   await page.waitForTimeout(400);
 
   let combatShot = false;
-  for (let i = 0; i < 24; i++) {
+  for (let i = 0; i < 40; i++) {
     const result = await page.evaluate(() => window.__SQUAD?.result?.()).catch(() => 'in_progress');
     if (result && result !== 'in_progress') break;
     const phase = await page.evaluate(() => window.__SQUAD?.phase?.()).catch(() => '');
     if (phase === 'pick') {
       const slot = await page.evaluate(() => window.__SQUAD.recordingSlot());
-      // The proven winning plan for w1-boss (so the run reaches the Convergence
-      // + victory crescendo). Avatar is forced on the last slot by the sim.
-      const plan = ['guardian', 'ranger', 'rogue', 'pyromancer', 'avatar'];
+      // The proven winning plan for the 7-slot showcase level (so the run
+      // reaches the Convergence + victory crescendo). Avatar is forced on the
+      // last slot by the sim. Mirrors the e2e gameplay spec's PLAN.
+      const plan = ['guardian', 'medic', 'ranger', 'pyromancer', 'rogue', 'engineer', 'avatar'];
       await page.evaluate((c) => window.__SQUAD.pickClass(c), plan[slot] ?? 'ranger');
       await page.waitForTimeout(50);
       await page.evaluate(() => window.__SQUAD.skipPlanning());
@@ -174,7 +188,7 @@ try {
       const slot = await page.evaluate(() => window.__SQUAD.recordingSlot());
       // On the final (Avatar) slot, step in small chunks and let frames render so
       // the Convergence beams + boss-death crescendo actually paint.
-      if (slot >= 4) {
+      if (slot >= 6) {
         for (let s = 0; s < 20; s++) {
           await page.evaluate(() => window.__SQUAD.fastForward(60));
           await page.waitForTimeout(70);

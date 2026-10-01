@@ -198,10 +198,14 @@ export class GameScene extends Phaser.Scene {
     this.world = this.add.graphics();
     this.hud = this.add.graphics();
     this.vfx = new Vfx(this, 12);
-    // Cinematic bloom + vignette on the world layer. Scaled down when the
+    // Cinematic bloom + vignette on the whole rendered frame via the main
+    // camera's internal FilterList. Phaser 4 filters applied to a single
+    // Graphics object only render that object's bounds into a texture, which
+    // composites to a fraction of a FIT-scaled canvas and clips the view;
+    // filtering the camera post-processes the full frame. Scaled down when the
     // accessibility "reduced flashing" setting is on.
     this.baseBloom = reducedFlashing() ? 0.4 : 1;
-    this.filters = installFilters(this.world, { bloom: this.baseBloom, vignette: true });
+    this.filters = installFilters(this.cameras.main, { bloom: this.baseBloom, vignette: true });
     this.overlay = this.add.container(0, 0).setDepth(30);
     this.banner = this.add
       .text(this.scale.width / 2, this.scale.height / 2 - 40, '', {

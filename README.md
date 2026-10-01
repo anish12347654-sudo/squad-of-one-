@@ -175,12 +175,14 @@ docs/         GDD, ARCHITECTURE, DECISIONS, PERF, CREDITS
   per milestone (read the **M5** section for this milestone's choices).
 - **[PERF.md](docs/PERF.md)** - budgets, the throttled-CPU perf pass results, and
   the release bundle sizes.
-- **[CREDITS.md](docs/CREDITS.md)** - fonts (OFL Noto Sans + Noto Sans Devanagari)
-  and other attributions.
+- **[CREDITS.md](docs/CREDITS.md)** - fonts (OFL Noto Sans + Noto Sans
+  Devanagari + Orbitron) and other attributions.
 
 ## License / assets
 
-All gameplay art is drawn procedurally (vector graphics + WebAudio); there are
-no third-party image or audio assets. Fonts are the OFL-licensed Noto Sans and
-Noto Sans Devanagari, subsetted and bundled locally (see `public/fonts/OFL.txt`
-and `docs/CREDITS.md`).
+All gameplay art is drawn procedurally (vector graphics + WebAudio + Phaser 4
+Filters); there are no third-party image or audio assets. Fonts are the
+OFL-licensed Noto Sans and Noto Sans Devanagari (UI/body text) plus Orbitron
+(the Latin title/headline display face; Hindi headlines fall back to Noto Sans
+Devanagari), all subsetted and bundled locally (see `public/fonts/OFL.txt` and
+`docs/CREDITS.md`).

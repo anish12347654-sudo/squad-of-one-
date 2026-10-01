@@ -2,9 +2,13 @@
  * Phaser 4 unified Filters helpers (brief section 8 + context.json).
  *
  * Phaser 4 replaced the v3 FX/postFX system with a unified Filters pipeline.
- * Filters are enabled per game object via `obj.enableFilters()`, after which
- * controllers are added on `obj.filters.internal` (Glow, Barrel, ColorMatrix,
- * Blur, Vignette, ...). We enable them on the world layer object and use:
+ * Filters live on a Camera's FilterList (`camera.filters.internal`), where the
+ * `internal` list post-processes the camera's whole rendered frame. We attach
+ * the cinematic bloom/vignette to the GameScene's main camera (NOT a single
+ * Graphics object: filtering one object renders only that object's bounds into
+ * a render target, which composites to a fraction of the frame on a FIT-scaled
+ * canvas and clips the view). Controllers added are Glow, Barrel, ColorMatrix,
+ * Blur and Vignette, used as:
  *   - a persistent Glow for the neon "bloom" look (tuned up for a real,
  *     cinematic bloom - outer glow + a soft Blur pass),
  *   - an optional Vignette for cinematic framing, and
@@ -24,11 +28,34 @@
 import Phaser from 'phaser';
 import { GLOWS } from './colors.js';
 
-/** A game object that supports the Phaser 4 Filters component. */
-type Filterable = Phaser.GameObjects.GameObject & {
-  enableFilters?: () => unknown;
-  filters?: { internal?: Phaser.GameObjects.Components.FilterList } | null;
+/** Anything that exposes a Phaser 4 FilterList we can add controllers to. */
+type FilterList = Phaser.GameObjects.Components.FilterList;
+
+/** A camera carrying the Phaser 4 internal/external filter lists. */
+type FilterCamera = Phaser.Cameras.Scene2D.Camera & {
+  filters?: { internal?: FilterList; external?: FilterList } | null;
 };
+
+/** A game object that can opt into per-object filtering (legacy support). */
+type FilterableObject = Phaser.GameObjects.GameObject & {
+  enableFilters?: () => unknown;
+  filters?: { internal?: FilterList } | null;
+};
+
+/**
+ * Resolve the internal FilterList from a Camera (preferred: full-frame
+ * post-processing) or, as a fallback, a filter-capable game object. Cameras
+ * expose `filters.internal` directly; game objects need `enableFilters()` first.
+ */
+function resolveFilterList(
+  target: Phaser.Cameras.Scene2D.Camera | Phaser.GameObjects.GameObject,
+): FilterList | null | undefined {
+  const cam = target as FilterCamera;
+  if (cam.filters?.internal) return cam.filters.internal;
+  const obj = target as FilterableObject;
+  obj.enableFilters?.();
+  return obj.filters?.internal;
+}
 
 export interface SceneFilters {
   glow: Phaser.Filters.Glow | null;
@@ -54,10 +81,14 @@ export interface InstallFiltersOpts {
   vignette?: boolean;
 }
 
-const BASE_GLOW_OUTER = 2.0;
+// Camera-level glow is applied to the WHOLE frame, so it must be far gentler
+// than an object-level glow (which only touched neon sprites): a strong glow
+// over the full frame blurs HUD text into mush. A low outer strength lifts the
+// neon edges while keeping text/UI legible.
+const BASE_GLOW_OUTER = 0.7;
 
 export function installFilters(
-  target: Phaser.GameObjects.GameObject,
+  target: Phaser.Cameras.Scene2D.Camera | Phaser.GameObjects.GameObject,
   opts: InstallFiltersOpts = {},
 ): SceneFilters {
   let glow: Phaser.Filters.Glow | null = null;
@@ -70,15 +101,15 @@ export function installFilters(
   const wantVignette = opts.vignette ?? true;
 
   try {
-    const obj = target as Filterable;
-    obj.enableFilters?.();
-    const list = obj.filters?.internal;
+    const list = resolveFilterList(target);
     if (list) {
-      // Tuned Glow + soft Blur = a real cinematic bloom on neon elements.
-      glow = list.addGlow(GLOWS.bloom, BASE_GLOW_OUTER, 0.5, 1, false, 8, 10);
-      bloom = list.addBlur(1, 2, 2, 1.0, 0xffffff, 4);
+      // Gentle camera-wide Glow + a very soft 1px Blur = a cinematic bloom that
+      // lifts the neon arena/entities while keeping the HUD and text crisp.
+      // (A strong Glow/Blur over the full frame reads as "out of focus".)
+      glow = list.addGlow(GLOWS.bloom, BASE_GLOW_OUTER, 0.0, 1, false, 6, 8);
+      bloom = list.addBlur(1, 1, 1, 0.35, 0xffffff, 2);
       if (wantVignette) {
-        vignette = list.addVignette(0.5, 0.5, 0.78, 0.42, 0x05070d);
+        vignette = list.addVignette(0.5, 0.5, 0.82, 0.36, 0x05070d);
       }
       // Rewind-only controllers, inactive until setRewind(true).
       barrel = list.addBarrel(0);
@@ -101,7 +132,7 @@ export function installFilters(
       glow.active = k > 0.001;
     }
     if (bloom) {
-      bloom.strength = 1.0 * k;
+      bloom.strength = 0.35 * k;
       bloom.active = k > 0.001;
     }
   };
