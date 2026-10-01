@@ -42,6 +42,7 @@ function offlineServiceWorker(): Plugin {
       for (const f of [
         'fonts/NotoSans-subset.woff2',
         'fonts/NotoSansDevanagari-subset.woff2',
+        'fonts/Orbitron-subset.woff2',
         'icons/icon-192.png',
         'icons/icon-512.png',
         'icons/maskable-512.png',
