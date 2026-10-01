@@ -105,3 +105,36 @@ shipped bundle.
 
 Source maps are emitted only in the non-release (dev/e2e) build; the release PWA
 omits them, so nothing extra is precached or shipped.
+
+## Visual overhaul (FEAT-001 / FEAT-002 / FEAT-003) perf impact
+
+The art-direction pass is entirely procedural (Phaser Graphics + the native
+unified Filters) with **no new runtime assets**: the release initial load is
+unchanged at ~1.65 MB (budget 5 MB) / ~1.70 MB total (budget 15 MB), verified by
+`npm run check:prod`.
+
+FEAT-003 adds per-frame render work in the GameScene (the animated backdrop,
+gradient arena, layered entity/boss draws, bloom crescendo and richer pooled
+VFX). Key perf guarantees are **preserved intact**:
+
+- **Particle / damage-number caps unchanged** - 220 pooled particles and 40
+  pooled damage numbers; the new `trail`/`ring`/`aura`/`sparkle`/`glitch`
+  helpers all draw from the same pools and silently no-op when the pool is full,
+  so a busy fight never allocates per tick or exceeds the cap.
+- **No per-tick allocations** - every entity/boss/HUD draw reuses the single
+  `world` / `hud` Graphics objects (cleared and repainted each frame); pooled
+  VFX reuse pre-allocated sprites/text.
+- **Auto-resolution-scaling preserved** - the <50 FPS -> lower backing-store /
+  >58 FPS -> restore logic (CSS size fixed) is untouched, so on a real
+  mid-range device the richer frame still auto-adapts to hold the budget.
+- **5-ticks/frame cap + fixed-60 Hz sim untouched** - the sim slows down (never
+  skips) under load exactly as before; all visual effects interpolate/decorate
+  and never feed back into a tick.
+
+**Headless note:** the dedicated headless Chromium runs `--disable-gpu`
+(software rasteriser), so the heavier frame measurably lowers headless FPS and
+pushed the long 7-slot `gameplay.spec.ts` end-to-end flow just past the default
+30 s per-test timeout (it was ~29.7 s at baseline). That spec's timeout was
+raised to 90 s; this is a software-raster artefact, **not** a device regression
+(real GPUs composite the bloom/gradients far faster), consistent with the
+`context.json` guidance that headless FPS numbers are not device numbers.

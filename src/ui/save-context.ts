@@ -71,6 +71,23 @@ export function reducedMotion(): boolean {
   return save.settings.reducedFlashing === true;
 }
 
+/**
+ * True when screen shake is allowed (on by default). The GameScene scales its
+ * camera shake to zero when this is off (presentation-only accessibility).
+ */
+export function screenShakeEnabled(): boolean {
+  return save.settings.screenShake !== false;
+}
+
+/**
+ * True when colour-blind / Assist identity aids are on. The render layer always
+ * draws the per-class shape + number identity; this strengthens those cues
+ * (brighter rims, bolder badges) so classes stay distinguishable without colour.
+ */
+export function colorBlindMode(): boolean {
+  return save.settings.colorBlind === true;
+}
+
 /** Multiplier applied to on-screen text for the text-size accessibility option. */
 export function textScale(): number {
   switch (save.settings.textSize) {

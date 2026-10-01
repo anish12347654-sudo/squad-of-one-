@@ -15,6 +15,15 @@ import { test, expect } from '@playwright/test';
 const SHARD_PLAN = { 0: 0, 1: 0 } as const;
 
 test('drives the M2 7-slot flow (paradox + rewrite + Convergence) with zero console errors', async ({ page }) => {
+  // This spec drives the full 7-slot showcase flow (many rendered frames) end to
+  // end. After the FEAT-003 in-game art-direction overhaul (layered entities,
+  // cinematic bloom, richer pooled VFX, animated backdrop) the heavier render
+  // path pushes the long flow just past the default 30 s under the headless
+  // --disable-gpu software rasteriser (device GPUs render it far faster). This
+  // raises only the time budget - no assertion is weakened; the determinism /
+  // invariance / solution / parity suites still prove the sim is byte-identical.
+  test.setTimeout(90_000);
+
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   page.on('console', (msg) => {

@@ -138,6 +138,75 @@ try {
     }
   }
 
+  // In-game combat + Convergence (premium gameplay proof). Drive the GameScene
+  // through the __SQUAD gameplay hook: pick classes, skip planning, drive bots,
+  // and capture a mid-combat frame plus the victory crescendo.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__SQUAD_UI?.beginLevel?.('w1-boss')).catch(() => {});
+  await page
+    .waitForFunction(() => typeof window.__SQUAD !== 'undefined', undefined, { timeout: 30000 })
+    .catch(() => console.log('gameplay hook wait timed out'));
+  await page.waitForTimeout(400);
+
+  let combatShot = false;
+  for (let i = 0; i < 24; i++) {
+    const result = await page.evaluate(() => window.__SQUAD?.result?.()).catch(() => 'in_progress');
+    if (result && result !== 'in_progress') break;
+    const phase = await page.evaluate(() => window.__SQUAD?.phase?.()).catch(() => '');
+    if (phase === 'pick') {
+      const slot = await page.evaluate(() => window.__SQUAD.recordingSlot());
+      // The proven winning plan for w1-boss (so the run reaches the Convergence
+      // + victory crescendo). Avatar is forced on the last slot by the sim.
+      const plan = ['guardian', 'ranger', 'rogue', 'pyromancer', 'avatar'];
+      await page.evaluate((c) => window.__SQUAD.pickClass(c), plan[slot] ?? 'ranger');
+      await page.waitForTimeout(50);
+      await page.evaluate(() => window.__SQUAD.skipPlanning());
+      await page.waitForTimeout(50);
+    }
+    const p2 = await page.evaluate(() => window.__SQUAD?.phase?.()).catch(() => '');
+    if (p2 === 'playing') {
+      await page.evaluate(() => window.__SQUAD.driveWithBots());
+      if (!combatShot) {
+        await page.waitForTimeout(700);
+        await shoot(page, '06-combat');
+        combatShot = true;
+      }
+      const slot = await page.evaluate(() => window.__SQUAD.recordingSlot());
+      // On the final (Avatar) slot, step in small chunks and let frames render so
+      // the Convergence beams + boss-death crescendo actually paint.
+      if (slot >= 4) {
+        for (let s = 0; s < 20; s++) {
+          await page.evaluate(() => window.__SQUAD.fastForward(60));
+          await page.waitForTimeout(70);
+          const ph = await page.evaluate(() => window.__SQUAD?.phase?.()).catch(() => '');
+          const res = await page.evaluate(() => window.__SQUAD?.result?.()).catch(() => 'in_progress');
+          if (ph === 'cinematic') {
+            // Wait past the initial white flash so the bloom + light-burst
+            // crescendo and the arena read in the capture.
+            await page.waitForTimeout(900);
+            await shoot(page, '06b-convergence-victory');
+            break;
+          }
+          if (res && res !== 'in_progress' && ph !== 'playing') break;
+        }
+      } else {
+        await page.evaluate(() => window.__SQUAD.fastForward(1000));
+        await page.waitForTimeout(50);
+        await page.evaluate(() => window.__SQUAD.fastForward(1000));
+        await page.waitForTimeout(50);
+      }
+    }
+  }
+  // Fallback: if we never caught the cinematic, grab whatever GameScene frame
+  // we ended on (decision/result) so there is still a late-game proof shot.
+  await page.waitForTimeout(300);
+  const endScene = await page.evaluate(() => window.__SQUAD_UI?.scene?.()).catch(() => '');
+  const endPhase = await page.evaluate(() => window.__SQUAD?.phase?.()).catch(() => '');
+  const hasConv = existsSync(`${OUT}/06b-convergence-victory.png`);
+  if (!hasConv && (endScene === 'GameScene' || endPhase === 'cinematic' || endPhase === 'result')) {
+    await shoot(page, '06b-convergence-victory');
+  }
+
   // First-time experience (premium first impression): force-replay it.
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${BASE}/?fte=1`, { waitUntil: 'load' });

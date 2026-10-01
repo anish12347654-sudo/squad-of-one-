@@ -31,10 +31,12 @@ import {
   CONVERGENCE_CHARGE,
 } from '@sim/index.js';
 import type { SimState, Unit, ClassId, ParadoxEvent } from '@sim/index.js';
-import { ARENA_02, CLASS_PRESENTATION, campaignLevelById } from '@content/index.js';
+import { ARENA_02, CLASS_PRESENTATION, campaignLevelById, worldById } from '@content/index.js';
 import type { LevelDef } from '@sim/index.js';
 import { createInputController, type InputController } from '../input.js';
-import { COLORS } from '../render/colors.js';
+import { COLORS, GLOWS, TINTS, lerpColor, lighten, darken } from '../render/colors.js';
+import { createBackdrop, type Backdrop } from '../render/backdrop.js';
+import { reducedFlashing, reducedMotion, screenShakeEnabled, colorBlindMode } from '@ui/save-context.js';
 import { installDevHook, type DevHookApi } from '../dev-hook.js';
 import { DebugOverlay } from '../debug-overlay.js';
 import { Vfx } from '../render/vfx.js';
@@ -82,6 +84,19 @@ export class GameScene extends Phaser.Scene {
   private banner!: Phaser.GameObjects.Text;
   private vfx!: Vfx;
   private filters!: SceneFilters;
+  /** Shared animated clockwork/rangoli backdrop behind the arena. */
+  private backdrop!: Backdrop;
+
+  // Cinematic bloom: a base intensity (scaled by reduced-flashing) that the
+  // Convergence/victory crescendo briefly pushes above, then eases back. Purely
+  // a Filters tuning value - never read by the sim.
+  private baseBloom = 1;
+  private bloomPulse = 0; // extra bloom added by the crescendo, decays to 0
+  /** Global clock (ms) for presentation-only pulsing (boss core, auras). */
+  private clock = 0;
+  /** World palette accent + floor colour (visual tint only). */
+  private worldAccent: number = GLOWS.accent;
+  private worldFloor: number = COLORS.arena;
 
   // World->screen transform.
   private originX = 0;
@@ -102,6 +117,12 @@ export class GameScene extends Phaser.Scene {
 
   // Paradox presentation bookkeeping.
   private seenParadox = 0;
+  /** Interactable ids already seen as "taken" (for one-shot grab sparkles). */
+  private grabbedShards = new Set<number>();
+  /** Last-rendered boss HP, for presentation-only damage numbers (never sim). */
+  private lastBossHp = -1;
+  /** Accumulated boss damage since the last damage number was flushed. */
+  private bossDmgAccum = 0;
   private floatingTexts: { text: string; x: number; y: number; life: number }[] = [];
   private timelineMarkers: ParadoxEvent[] = [];
 
@@ -162,10 +183,25 @@ export class GameScene extends Phaser.Scene {
     this.prev = cloneSimState(this.runner.state);
     this.controller = createInputController(this);
 
+    // Shared animated backdrop (world-palette-tinted clockwork/rangoli) behind
+    // the arena. Depth -100 keeps it under all gameplay graphics. Honors
+    // reduced-motion (static single frame). Presentation-only.
+    const bdOpts: Parameters<typeof createBackdrop>[1] = { reducedMotion: reducedMotion(), stars: 40 };
+    const campLevel = this.campaignLevelId ? campaignLevelById(this.campaignLevelId) : undefined;
+    const worldTheme = campLevel ? worldById(campLevel.worldId) : undefined;
+    this.worldAccent = worldTheme?.palette.accent ?? GLOWS.accent;
+    this.worldFloor = worldTheme?.palette.floor ?? COLORS.arena;
+    bdOpts.accent = this.worldAccent;
+    bdOpts.accent2 = GLOWS.accent2;
+    this.backdrop = createBackdrop(this, bdOpts);
+
     this.world = this.add.graphics();
     this.hud = this.add.graphics();
     this.vfx = new Vfx(this, 12);
-    this.filters = installFilters(this.world);
+    // Cinematic bloom + vignette on the world layer. Scaled down when the
+    // accessibility "reduced flashing" setting is on.
+    this.baseBloom = reducedFlashing() ? 0.4 : 1;
+    this.filters = installFilters(this.world, { bloom: this.baseBloom, vignette: true });
     this.overlay = this.add.container(0, 0).setDepth(30);
     this.banner = this.add
       .text(this.scale.width / 2, this.scale.height / 2 - 40, '', {
@@ -416,6 +452,9 @@ export class GameScene extends Phaser.Scene {
     this.prev = cloneSimState(this.runner.state);
     this.accumulator = 0;
     this.snapshots = [cloneSimState(this.runner.state)];
+    // Reset presentation-only boss-damage tracking at loop start (HP resets).
+    this.lastBossHp = -1;
+    this.bossDmgAccum = 0;
     this.clearOverlay();
     this.banner.setText('');
   }
@@ -437,9 +476,17 @@ export class GameScene extends Phaser.Scene {
       this.updateCinematic(dt);
     }
 
+    this.clock += deltaMs;
+    this.backdrop.update(deltaMs);
+
     const alpha = this.phase === 'playing' ? this.accumulator / TICK_DT_SECONDS : 0;
     this.draw(alpha);
     this.vfx.update();
+    // Cinematic bloom: ease the crescendo pulse back to the base intensity.
+    if (this.bloomPulse > 0.001) {
+      this.bloomPulse *= 0.92;
+      this.filters.setBloom(Math.min(1.6, this.baseBloom + this.bloomPulse));
+    }
     this.filters.update(this.phase === 'rewind');
     this.updateAudioLayers();
     this.updateAutoResolution(deltaMs);
@@ -506,22 +553,34 @@ export class GameScene extends Phaser.Scene {
         this.floatingTexts.push({ text: `PARADOX: ${ev.detail}`, x: ev.x, y: ev.y + (this.floatingTexts.length * 40 - 40), life: 150 });
       }
       this.audio.sfx('paradox');
-      this.vfx.burst(this.wx(ev.x), this.wy(ev.y), COLORS.paradox, 24, 4, 30, 3);
-      this.vfx.shake(this.cameras.main, 200, 0.008);
+      // Paradox: a red glitch burst + jittery shards + a short bloom pop.
+      this.vfx.burst(this.wx(ev.x), this.wy(ev.y), COLORS.paradox, 20, 4, 30, 3);
+      this.vfx.glitch(this.wx(ev.x), this.wy(ev.y), COLORS.paradoxGlow, 8);
+      this.vfx.ring(this.wx(ev.x), this.wy(ev.y), COLORS.paradox, 10, 3.5, 20, 3);
+      this.shakeCam(200, 0.008);
+      this.pulseBloom(0.25);
     }
     this.seenParadox = evs.length;
   }
 
   private onLoopResolved(result: string): void {
     if (result === 'won') {
-      // Spectacular boss death, then the victory cinematic.
+      // Cinematic boss death: a bloom + shatter burst crescendo, then the
+      // victory cinematic. All presentation-only.
       const boss = this.runner.state.units.find((u) => u.kind === 'boss');
       if (boss) {
-        this.vfx.burst(this.wx(boss.x), this.wy(boss.y), 0xff8a95, 120, 7, 46, 5);
-        this.vfx.burst(this.wx(boss.x), this.wy(boss.y), 0xffffff, 80, 5, 40, 4);
+        const bx = this.wx(boss.x);
+        const by = this.wy(boss.y);
+        // Shatter burst: outward shockwave ring + a dense ember cloud + a bright core.
+        this.vfx.ring(bx, by, 0xffffff, 18, 8, 40, 4);
+        this.vfx.ring(bx, by, COLORS.bossCore, 16, 6, 44, 4);
+        this.vfx.burst(bx, by, 0xff8a95, 90, 7, 46, 5);
+        this.vfx.burst(bx, by, 0xffffff, 60, 5, 40, 4);
+        this.vfx.burst(bx, by, GLOWS.gold, 40, 4, 50, 3);
       }
-      this.vfx.shake(this.cameras.main, 600, 0.02);
-      this.vfx.flash(this.cameras.main, 400, 255, 255, 255);
+      this.shakeCam(600, 0.02);
+      this.flashCam(400, 255, 255, 255);
+      this.pulseBloom(0.6);
       this.audio.sfx('victory');
       this.startCinematic();
     } else {
@@ -625,7 +684,22 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateCinematic(dt: number): void {
+    const prevT = this.cinematicTimer;
     this.cinematicTimer += dt;
+    // Cinematic crescendo: periodic light bursts + a sustained bloom glow at the
+    // boss's last position, landing the "win" as premium. Presentation-only.
+    const boss = this.runner.state.units.find((u) => u.kind === 'boss');
+    if (boss) {
+      const bx = this.wx(boss.x);
+      const by = this.wy(boss.y);
+      // Every ~0.5s fire a gold/white light burst.
+      if (Math.floor(prevT / 0.5) !== Math.floor(this.cinematicTimer / 0.5)) {
+        this.vfx.ring(bx, by, GLOWS.gold, 14, 6, 36, 4);
+        this.vfx.burst(bx, by, 0xffffff, 20, 5, 34, 4);
+        this.pulseBloom(0.4);
+        if (!reducedFlashing() && this.cinematicTimer < 1.5) this.flashCam(260, 255, 240, 200);
+      }
+    }
     // ~3.5 s of slow-mo cuts, then results.
     if (this.cinematicTimer > 3.5) this.showResult('won');
   }
@@ -843,6 +917,9 @@ export class GameScene extends Phaser.Scene {
     this.timelineMarkers = [];
     this.floatingTexts = [];
     this.snapshots = [];
+    this.grabbedShards.clear();
+    this.lastBossHp = -1;
+    this.bossDmgAccum = 0;
     this.controller.setScriptedSource(null);
     this.filters.setRewind(false, 0);
     this.showClassPicker();
@@ -921,10 +998,49 @@ export class GameScene extends Phaser.Scene {
     const y = this.wy(-this.level.halfHeight);
     const w = this.ws(this.level.halfWidth * 2);
     const h = this.ws(this.level.halfHeight * 2);
-    g.fillStyle(COLORS.arena, 1);
-    g.fillRoundedRect(x, y, w, h, 14);
-    g.lineStyle(2, COLORS.arenaEdge, 1);
-    g.strokeRoundedRect(x, y, w, h, 14);
+    const r = 14;
+
+    // Soft drop shadow under the floor plate for depth.
+    g.fillStyle(TINTS.shadow, 0.5);
+    g.fillRoundedRect(x - 3, y + 5, w + 6, h + 6, r + 2);
+
+    // Gradient floor (lit top -> darker bottom), tinted toward the world floor
+    // colour so each world reads distinct. A rounded base plate is overlaid
+    // with inset horizontal bands so the gradient never pokes past the rounded
+    // corners. Modest band count keeps it cheap.
+    const top = lighten(this.worldFloor, 0.18);
+    const bottom = darken(this.worldFloor, 0.35);
+    g.fillStyle(lerpColor(top, bottom, 0.5), 1);
+    g.fillRoundedRect(x, y, w, h, r);
+    const bands = 12;
+    const inner = r; // keep bands clear of the rounded corners
+    const bandH = (h - inner * 2) / bands;
+    for (let i = 0; i < bands; i++) {
+      const tt = i / (bands - 1);
+      g.fillStyle(lerpColor(top, bottom, tt), 0.9);
+      g.fillRect(x + 1, y + inner + i * bandH, w - 2, bandH + 1);
+    }
+
+    // Re-stroke the rounded edge with a glowing world-accent rim (double stroke:
+    // a soft wide halo + a crisp bright edge).
+    g.lineStyle(5, this.worldAccent, 0.12);
+    g.strokeRoundedRect(x, y, w, h, r);
+    g.lineStyle(2, lighten(this.worldAccent, 0.25), 0.85);
+    g.strokeRoundedRect(x, y, w, h, r);
+
+    // Faint inner grid lines for a "lit arena" read (very subtle, kept sparse
+    // so the per-frame redraw stays cheap under software rasterisation).
+    g.lineStyle(1, lighten(this.worldFloor, 0.3), 0.06);
+    const cols = 4;
+    for (let i = 1; i < cols; i++) {
+      const gx = x + (w * i) / cols;
+      g.lineBetween(gx, y + 6, gx, y + h - 6);
+    }
+    const rows = 5;
+    for (let i = 1; i < rows; i++) {
+      const gy = y + (h * i) / rows;
+      g.lineBetween(x + 6, gy, x + w - 6, gy);
+    }
   }
 
   private lerp(a: number, b: number, t: number): number {
@@ -947,21 +1063,16 @@ export class GameScene extends Phaser.Scene {
 
       if (u.kind === 'boss') {
         if (!u.alive) continue;
-        const r = this.ws(BOSS_RADIUS);
-        g.fillStyle(COLORS.boss, 1);
-        g.fillCircle(sx, sy, r);
-        g.fillStyle(COLORS.bossCore, 1);
-        g.fillCircle(sx, sy, r * 0.45);
-        const fx = sx + Math.cos((u.facing / 4096) * Math.PI * 2) * r;
-        const fy = sy + Math.sin((u.facing / 4096) * Math.PI * 2) * r;
-        g.lineStyle(3, 0xffffff, 0.8);
-        g.lineBetween(sx, sy, fx, fy);
+        this.drawBoss(g, u, sx, sy, cur);
         continue;
       }
 
       if (!u.alive) {
-        g.fillStyle(0x33384a, 0.5);
+        // Fallen echo: a dim, hollow husk.
+        g.fillStyle(0x2a3042, 0.45);
         g.fillCircle(sx, sy, this.ws(10));
+        g.lineStyle(1, 0x3a4358, 0.4);
+        g.strokeCircle(sx, sy, this.ws(10));
         continue;
       }
 
@@ -971,55 +1082,168 @@ export class GameScene extends Phaser.Scene {
       const r = Math.max(11, this.ws(20));
 
       if (u.paradox) {
-        // Paradox echo: red, glitching, jittering.
+        // Paradox echo: red, glitching, jittering, with scatter shards.
         const jx = (Math.random() - 0.5) * 6;
         const jy = (Math.random() - 0.5) * 6;
         const telegraph = u.paradoxTelegraph > 0;
+        // Soft red glow halo.
+        g.fillStyle(COLORS.paradoxGlow, 0.14);
+        g.fillCircle(sx + jx, sy + jy, r + 8);
         g.fillStyle(COLORS.paradox, telegraph ? 0.5 + Math.random() * 0.4 : 0.9);
         this.drawSilhouette(g, sx + jx, sy + jy, r, pres.silhouette, u.facing);
         g.lineStyle(2, COLORS.paradoxGlow, 0.9);
         g.strokeCircle(sx + jx, sy + jy, r + 4 + Math.random() * 3);
-        // Glitch shards.
-        if (Math.random() < 0.5) {
+        if (Math.random() < 0.4) {
           g.fillStyle(COLORS.paradoxGlow, 0.7);
           g.fillRect(sx + (Math.random() - 0.5) * 30, sy + (Math.random() - 0.5) * 30, 6, 2);
         }
+        // Occasional glitch motes (pooled, within caps).
+        if (Math.random() < 0.08) this.vfx.glitch(sx + jx, sy + jy, COLORS.paradoxGlow, 3);
         this.label(sx, sy, 'X', 12, '#ffffff', true);
         continue;
       }
 
-      const alphaFill = isYou ? 1 : 0.55;
-      g.fillStyle(pres.color, alphaFill);
+      // --- Layered friendly/echo look: glow halo + gradient body + bright
+      // energy core + class-colored rim. The per-class SHAPE (silhouette) and
+      // the NUMBER badge are always drawn (colour-blind Assist identity).
+      const bodyAlpha = isYou ? 1 : 0.72;
+      const topCol = lighten(pres.color, isYou ? 0.35 : 0.2);
+      const botCol = darken(pres.color, 0.35);
+
+      // Soft outer glow (brighter for you + under colour-blind mode).
+      const glowA = (isYou ? 0.22 : 0.14) * (colorBlindMode() ? 1.4 : 1);
+      g.fillStyle(pres.color, glowA);
+      g.fillCircle(sx, sy, r + (isYou ? 9 : 6));
+
+      // Gradient body: a darker base silhouette with a lighter top overlay to
+      // read as a lit volume (cheap: two silhouette fills).
+      g.fillStyle(botCol, bodyAlpha);
       this.drawSilhouette(g, sx, sy, r, pres.silhouette, u.facing);
+      g.fillStyle(topCol, bodyAlpha * 0.6);
+      this.drawSilhouette(g, sx, sy - r * 0.28, r * 0.82, pres.silhouette, u.facing);
+
+      // Bright energy core.
+      g.fillStyle(lighten(pres.color, 0.6), isYou ? 0.95 : 0.7);
+      g.fillCircle(sx, sy, r * 0.3);
+      g.fillStyle(0xffffff, isYou ? 0.9 : 0.6);
+      g.fillCircle(sx - r * 0.08, sy - r * 0.08, r * 0.13);
+
+      // Class-colored rim. The live "you" gets a bright white rim; echoes get
+      // a class-colored rim (thicker under colour-blind mode for identity).
+      const rimW = colorBlindMode() ? 3 : 2;
       if (isYou) {
         g.lineStyle(3, COLORS.youOutline, 1);
         g.strokeCircle(sx, sy, r + 3);
+        g.lineStyle(1.5, lighten(pres.color, 0.4), 0.9);
+        g.strokeCircle(sx, sy, r + 5);
+      } else {
+        g.lineStyle(rimW, lighten(pres.color, 0.3), 0.9);
+        g.strokeCircle(sx, sy, r + 2);
       }
+
+      // Status auras.
       if (u.sanctuaryTicks > 0) {
-        g.lineStyle(2, 0x81c784, 0.5);
+        g.lineStyle(2, 0x81c784, 0.55);
         g.strokeCircle(sx, sy, r + 8);
+        if (Math.random() < 0.3) this.vfx.aura(sx, sy, r + 6, 0x9fe6a8, 2, 20);
       }
       if (u.chargeTicks > 0) {
         g.lineStyle(3, 0xffe08a, 0.9);
         g.strokeCircle(sx, sy, r + 6);
       }
       if (u.invulnTicks > 0 && u.invulnHits > 0) {
-        g.lineStyle(2, 0xba68c8, 0.8);
+        g.lineStyle(2, 0xba68c8, 0.85);
         g.strokeCircle(sx, sy, r + 10);
       }
 
+      // HP bar (crisper: shadowed back + gradient fill).
       const barW = this.ws(34);
       const bx = sx - barW / 2;
       const by = sy - r - 12;
-      g.fillStyle(COLORS.hpBack, 0.9);
+      g.fillStyle(TINTS.shadow, 0.5);
+      g.fillRect(bx - 1, by - 1, barW + 2, 6);
+      g.fillStyle(COLORS.hpBack, 0.95);
       g.fillRect(bx, by, barW, 4);
       const frac = Math.max(0, u.hp / u.maxHp);
-      g.fillStyle(frac > 0.35 ? COLORS.hpFill : COLORS.hpFillLow, 1);
+      const hpCol = frac > 0.35 ? COLORS.hpFill : COLORS.hpFillLow;
+      g.fillStyle(hpCol, 1);
       g.fillRect(bx, by, barW * frac, 4);
+      g.fillStyle(lighten(hpCol, 0.4), 0.7);
+      g.fillRect(bx, by, barW * frac, 1.5);
 
       const badge = isYou ? 'YOU' : `${u.slot + 1}`;
-      this.label(sx, sy, badge, isYou ? 9 : 10, isYou ? '#ffffff' : '#0b0f1a', true);
+      this.label(sx, sy, badge, isYou ? 9 : 10, isYou ? '#ffffff' : '#06080f', true);
     }
+  }
+
+  /**
+   * Layered boss render: gradient body, glowing energy core that pulses with
+   * phase, and a facing beam. Phase 2 (<=50% HP) reads hotter/brighter. All
+   * presentation-only; nothing here feeds the sim.
+   */
+  private drawBoss(g: Phaser.GameObjects.Graphics, u: Unit, sx: number, sy: number, cur: SimState): void {
+    const r = this.ws(BOSS_RADIUS);
+    const frac = Math.max(0, u.hp / u.maxHp);
+
+    // Presentation-only damage numbers + hit sparks: derived purely from the
+    // rendered boss-HP delta during live play. Never read by the sim.
+    if (this.phase === 'playing') {
+      if (this.lastBossHp >= 0 && u.hp < this.lastBossHp) {
+        this.bossDmgAccum += this.lastBossHp - u.hp;
+        // Flush as a floating number once a few hits accumulate (keeps the pool
+        // uncluttered under rapid fire) and shows big hits boldly.
+        if (this.bossDmgAccum >= 8) {
+          const big = this.bossDmgAccum >= 60;
+          this.vfx.damageNumber(sx + (Math.random() - 0.5) * 20, sy - r * 0.6, this.bossDmgAccum, big ? '#ffd24a' : '#fff0b0', big);
+          this.vfx.spark(sx, sy, (Math.random() - 0.5), (Math.random() - 0.5), 0xffe08a, 3);
+          this.bossDmgAccum = 0;
+        }
+      }
+      this.lastBossHp = u.hp;
+    }
+    const phase2 = frac <= PHASE1_THRESHOLD;
+    // Pulse speed/strength ramps up in phase 2 for a cinematic "enraged" read.
+    const pulseHz = phase2 ? 0.012 : 0.006;
+    const pulse = 0.5 + 0.5 * Math.sin(this.clock * pulseHz);
+
+    // Outer glow halo (hotter in phase 2).
+    const haloCol = phase2 ? 0xff6b57 : GLOWS.danger;
+    g.fillStyle(haloCol, 0.1 + pulse * 0.08);
+    g.fillCircle(sx, sy, r * (1.35 + pulse * 0.12));
+
+    // Gradient body: darker rim base + lighter top cap.
+    g.fillStyle(darken(COLORS.boss, 0.3), 1);
+    g.fillCircle(sx, sy, r);
+    g.fillStyle(lighten(COLORS.boss, 0.18), 0.9);
+    g.fillCircle(sx, sy - r * 0.22, r * 0.82);
+
+    // Rotating ring of energy nodes (clockwork motif), slow in p1, fast in p2.
+    const nodes = 8;
+    const spin = this.clock * (phase2 ? 0.0016 : 0.0008);
+    g.fillStyle(lighten(haloCol, 0.3), 0.7 + pulse * 0.2);
+    for (let i = 0; i < nodes; i++) {
+      const a = spin + (i / nodes) * Math.PI * 2;
+      g.fillCircle(sx + Math.cos(a) * r * 0.82, sy + Math.sin(a) * r * 0.82, 2.5 + pulse * 1.5);
+    }
+
+    // Glowing energy core (pulses with phase).
+    const coreR = r * (0.4 + pulse * 0.1);
+    g.fillStyle(lighten(COLORS.bossCore, pulse * 0.3), 0.95);
+    g.fillCircle(sx, sy, coreR);
+    g.fillStyle(0xffffff, 0.85);
+    g.fillCircle(sx - coreR * 0.15, sy - coreR * 0.15, coreR * 0.4);
+
+    // Bright facing beam.
+    const fx = sx + Math.cos((u.facing / 4096) * Math.PI * 2) * r;
+    const fy = sy + Math.sin((u.facing / 4096) * Math.PI * 2) * r;
+    g.lineStyle(3, 0xffffff, 0.85);
+    g.lineBetween(sx, sy, fx, fy);
+
+    // In phase 2, occasionally shed a few embers for a "seething" feel (pooled).
+    if (phase2 && Math.random() < 0.1) {
+      this.vfx.aura(sx, sy, r * 0.9, haloCol, 2, 18);
+    }
+    void cur;
   }
 
   private drawSilhouette(g: Phaser.GameObjects.Graphics, x: number, y: number, r: number, shape: string, facing: number): void {
@@ -1069,23 +1293,40 @@ export class GameScene extends Phaser.Scene {
       const sx = this.wx(ix);
       const sy = this.wy(iy);
       const hostile = p.hitsEveryone || p.team === 'enemy';
+      const coreCol = hostile ? COLORS.paradox : 0xffd27a;
       if (p.visual === 'meteor') {
-        // Ground telegraph circle while fused.
+        // Ground telegraph circle while fused, with a glowing marker + core.
+        const ar = this.ws(p.aoeRadius ?? 40);
+        g.fillStyle(0xff7043, 0.12);
+        g.fillCircle(sx, sy, ar);
         g.lineStyle(2, 0xff7043, 0.9);
-        g.strokeCircle(sx, sy, this.ws(p.aoeRadius ?? 40));
-        g.fillStyle(0xff7043, 0.15);
-        g.fillCircle(sx, sy, this.ws(p.aoeRadius ?? 40));
-        g.fillStyle(0xffd27a, 1);
-        g.fillCircle(sx, sy, this.ws(6));
-      } else if (p.piercing || p.visual === 'beam') {
-        g.fillStyle(hostile ? COLORS.paradox : 0xffe08a, 1);
-        g.fillCircle(sx, sy, this.ws(7));
-      } else if (p.visual === 'orb') {
-        g.fillStyle(hostile ? COLORS.paradox : 0xff7043, 1);
+        g.strokeCircle(sx, sy, ar);
+        g.fillStyle(0xffd27a, 0.4);
+        g.fillCircle(sx, sy, this.ws(10));
+        g.fillStyle(0xfff2cc, 1);
         g.fillCircle(sx, sy, this.ws(6));
       } else {
-        g.fillStyle(hostile ? COLORS.paradox : 0xffd27a, 1);
-        g.fillCircle(sx, sy, this.ws(4));
+        let rad = 4;
+        let col = coreCol;
+        if (p.piercing || p.visual === 'beam') {
+          rad = 7;
+          col = hostile ? COLORS.paradox : 0xffe08a;
+        } else if (p.visual === 'orb') {
+          rad = 6;
+          col = hostile ? COLORS.paradox : 0xff7043;
+        }
+        const rr = this.ws(rad);
+        // Soft glow halo + bright white-hot core.
+        g.fillStyle(col, 0.25);
+        g.fillCircle(sx, sy, rr * 2);
+        g.fillStyle(col, 1);
+        g.fillCircle(sx, sy, rr);
+        g.fillStyle(lighten(col, 0.5), 0.9);
+        g.fillCircle(sx, sy, rr * 0.5);
+        // Pooled trail dot (cheap, honors reduced-motion by skipping).
+        if (!reducedMotion() && Math.random() < 0.6) {
+          this.vfx.trail(sx, sy, col, Math.max(2, rr * 0.6), 10);
+        }
       }
     }
   }
@@ -1117,14 +1358,26 @@ export class GameScene extends Phaser.Scene {
       const sx = this.wx(it.x);
       const sy = this.wy(it.y);
       if (it.taken && it.kind === 'shard') {
+        // One-shot pickup sparkle on the grab transition (presentation-only).
+        if (!this.grabbedShards.has(it.id)) {
+          this.grabbedShards.add(it.id);
+          this.vfx.sparkle(sx, sy, COLORS.shardIcon, 7);
+          this.vfx.ring(sx, sy, COLORS.interactable, 8, 2.5, 16, 2);
+        }
         g.lineStyle(1, 0x334, 0.5);
         g.strokeCircle(sx, sy, this.ws(it.radius));
         continue;
       }
-      g.fillStyle(COLORS.interactable, 0.85);
+      // Pulsing collect ring + glowing star icon.
+      const pulse = reducedMotion() ? 0.5 : 0.5 + 0.5 * Math.sin(this.clock * 0.005);
+      g.lineStyle(2, COLORS.interactable, 0.2 + pulse * 0.3);
+      g.strokeCircle(sx, sy, this.ws(it.radius) * (0.9 + pulse * 0.1));
+      g.fillStyle(COLORS.interactable, 0.18);
+      g.fillCircle(sx, sy, this.ws(12));
+      g.fillStyle(COLORS.shardIcon, 0.95);
       this.starShape(g, sx, sy, this.ws(10), COLORS.shardIcon);
-      g.lineStyle(1, COLORS.interactable, 0.3);
-      g.strokeCircle(sx, sy, this.ws(it.radius));
+      // Idle twinkle (occasional, pooled, within caps).
+      if (!reducedMotion() && Math.random() < 0.03) this.vfx.sparkle(sx, sy, COLORS.shardIcon, 2);
     }
   }
 
@@ -1136,31 +1389,57 @@ export class GameScene extends Phaser.Scene {
     if (!boss) return;
     const bx = this.wx(boss.x);
     const by = this.wy(boss.y);
-    // Beam from the Avatar and each alive echo -> boss.
+    // Convergence climax: bright energy beams from the Avatar + each alive echo
+    // into the boss, a swelling light core at the boss, and a particle
+    // crescendo. Driven off render/VFX only - never the sim.
     for (const u of cur.units) {
       const beams = (u.classId === 'avatar' && u.alive) || (u.kind === 'echo' && u.alive && !u.paradox);
       if (!beams) continue;
       const ux = this.wx(u.x);
       const uy = this.wy(u.y);
-      g.lineStyle(3 + Math.random() * 2, COLORS.convergence, 0.9);
+      // Wide soft beam + bright inner beam.
+      g.lineStyle(7 + Math.random() * 3, COLORS.convergence, 0.2);
       g.lineBetween(ux, uy, bx, by);
+      g.lineStyle(3 + Math.random() * 2, lighten(COLORS.convergence, 0.4), 0.95);
+      g.lineBetween(ux, uy, bx, by);
+      // Energy sparks streaming toward the boss.
+      if (!reducedMotion() && Math.random() < 0.5) {
+        const t = Math.random();
+        this.vfx.trail(ux + (bx - ux) * t, uy + (by - uy) * t, COLORS.convergence, 3, 10);
+      }
     }
+    // Swelling light core at the boss + crescendo bloom.
+    const pulse = 0.5 + 0.5 * Math.sin(this.clock * 0.03);
+    g.fillStyle(COLORS.convergence, 0.18 + pulse * 0.1);
+    g.fillCircle(bx, by, this.ws(BOSS_RADIUS) * (1.6 + pulse * 0.4));
+    g.fillStyle(0xffffff, 0.5 + pulse * 0.3);
+    g.fillCircle(bx, by, this.ws(BOSS_RADIUS) * 0.5);
     this.vfx.burst(bx, by, COLORS.convergence, 6, 5, 20, 3);
+    this.pulseBloom(0.3);
   }
 
   private drawAttacks(cur: SimState): void {
     const g = this.world;
     for (const a of cur.attacks) {
       const telegraphing = a.telegraphTicks > 0;
+      // Preserve the existing safe/danger semantics: red while telegraphing
+      // (incoming danger), warm gold on the active frame (safe-colour).
       const color = telegraphing ? COLORS.telegraph : COLORS.telegraphSafe;
-      const fillAlpha = telegraphing ? 0.22 : 0.4;
+      // Pulse the telegraph fill so an incoming hit reads urgently; the active
+      // frame is a brighter solid flash.
+      const pulse = telegraphing ? 0.5 + 0.5 * Math.sin(this.clock * 0.02) : 1;
+      const fillAlpha = (telegraphing ? 0.22 : 0.42) * (0.7 + pulse * 0.3);
       const sx = this.wx(a.x);
       const sy = this.wy(a.y);
       if (a.shape === 'slam') {
+        const rr = this.ws(a.radius);
+        // Soft glow ring that booms outward with the pulse.
+        g.lineStyle(6, color, 0.12 * pulse);
+        g.strokeCircle(sx, sy, rr);
         g.fillStyle(color, fillAlpha);
-        g.fillCircle(sx, sy, this.ws(a.radius));
-        g.lineStyle(2, color, 0.9);
-        g.strokeCircle(sx, sy, this.ws(a.radius));
+        g.fillCircle(sx, sy, rr);
+        g.lineStyle(2.5, lighten(color, 0.3), 0.95);
+        g.strokeCircle(sx, sy, rr);
       } else if (a.shape === 'cone') {
         this.drawCone(g, sx, sy, this.ws(a.radius), a.angle, a.halfArc, color, fillAlpha);
       } else {
@@ -1307,14 +1586,30 @@ export class GameScene extends Phaser.Scene {
       const bw = w - 80;
       const bx = 40;
       const by = 40;
+      const bh = 14;
+      // Soft shadow + track.
+      g.fillStyle(TINTS.shadow, 0.6);
+      g.fillRoundedRect(bx - 2, by + 2, bw + 4, bh + 2, 7);
       g.fillStyle(COLORS.hpBack, 1);
-      g.fillRoundedRect(bx, by, bw, 14, 6);
+      g.fillRoundedRect(bx, by, bw, bh, 6);
       const frac = Math.max(0, boss.hp / boss.maxHp);
-      g.fillStyle(COLORS.boss, 1);
-      g.fillRoundedRect(bx, by, bw * frac, 14, 6);
+      // Gradient fill (lit top -> darker bottom) + a bright highlight line.
+      if (frac > 0) {
+        const fw = bw * frac;
+        g.fillStyle(darken(COLORS.boss, 0.25), 1);
+        g.fillRoundedRect(bx, by, fw, bh, 6);
+        g.fillStyle(lighten(COLORS.boss, 0.2), 0.9);
+        g.fillRoundedRect(bx, by, fw, bh * 0.5, 6);
+        g.fillStyle(lighten(COLORS.boss, 0.5), 0.6);
+        g.fillRect(bx + 3, by + 2, Math.max(0, fw - 6), 1.5);
+      }
+      // Phase marker.
       const tickX = bx + bw * PHASE1_THRESHOLD;
-      g.lineStyle(2, 0xffffff, 0.8);
-      g.lineBetween(tickX, by - 3, tickX, by + 17);
+      g.lineStyle(2, 0xffffff, 0.85);
+      g.lineBetween(tickX, by - 3, tickX, by + bh + 3);
+      // Glow rim.
+      g.lineStyle(1, lighten(COLORS.boss, 0.3), 0.5);
+      g.strokeRoundedRect(bx, by, bw, bh, 6);
       this.label(w / 2, 25, `THE WARDEN   ${Math.ceil(boss.hp)} / ${boss.maxHp}`, 12, '#e8ecff', true);
     }
 
@@ -1326,23 +1621,34 @@ export class GameScene extends Phaser.Scene {
       const unit = cur.units.find((u) => u.slot === s && (u.kind === 'player' || u.kind === 'echo'));
       const isRecording = s === this.runner.recordingSlot && (this.phase === 'playing' || this.phase === 'planning');
       const paradox = unit?.paradox === true;
-      g.lineStyle(isRecording ? 3 : 1, isRecording ? 0xffffff : paradox ? COLORS.paradox : 0x3a4358, 1);
-      if (cls) {
-        const pres = CLASS_PRESENTATION[cls];
-        const alive = unit ? unit.alive : true;
-        g.fillStyle(paradox ? COLORS.paradox : pres.color, alive ? 1 : 0.25);
-      } else {
-        g.fillStyle(0x2a3350, 1);
-      }
+      // Soft shadow under each slot chip.
+      g.fillStyle(TINTS.shadow, 0.5);
+      g.fillRoundedRect(sx - 15, slotY - 13, 30, 30, 6);
+      const baseCol = cls ? (paradox ? COLORS.paradox : CLASS_PRESENTATION[cls].color) : 0x2a3350;
+      const alive = cls ? (unit ? unit.alive : true) : true;
+      // Gradient fill chip.
+      g.fillStyle(darken(baseCol, 0.3), alive ? 1 : 0.25);
       g.fillRoundedRect(sx - 15, slotY - 15, 30, 30, 6);
+      g.fillStyle(lighten(baseCol, 0.2), alive ? 0.8 : 0.2);
+      g.fillRoundedRect(sx - 15, slotY - 15, 30, 15, 6);
+      // Rim: bright white (+glow) while recording, else class/paradox colour.
+      if (isRecording) {
+        g.lineStyle(5, baseCol, 0.25);
+        g.strokeRoundedRect(sx - 15, slotY - 15, 30, 30, 6);
+        g.lineStyle(3, 0xffffff, 1);
+      } else {
+        g.lineStyle(1.5, lighten(baseCol, 0.3), paradox ? 1 : 0.8);
+      }
       g.strokeRoundedRect(sx - 15, slotY - 15, 30, 30, 6);
       const short = cls ? CLASS_PRESENTATION[cls].name[0] : '·';
-      this.label(sx, slotY, paradox ? 'X' : short ?? '·', 13, '#0b0f1a', true);
+      this.label(sx, slotY, paradox ? 'X' : short ?? '·', 13, '#06080f', true);
     }
 
     // Time Shards indicator (top-right, above the loop ring).
     for (let i = 0; i < this.runner.shards; i++) {
       const shx = w - 40 - i * 16;
+      g.fillStyle(0x64ffda, 0.25);
+      g.fillCircle(shx, 44, 9);
       this.starShape(g, shx, 44, 6, 0x64ffda);
     }
 
@@ -1351,9 +1657,17 @@ export class GameScene extends Phaser.Scene {
     const ringY = 92;
     const ringR = 18;
     const tfrac = Math.min(1, cur.tick / cur.loopLength);
+    // Inner disc + glow so the timer reads as a lit dial.
+    g.fillStyle(0x121831, 0.85);
+    g.fillCircle(ringX, ringY, ringR);
     g.lineStyle(4, 0x2a3350, 1);
     g.strokeCircle(ringX, ringY, ringR);
-    this.drawStrokeArc(g, ringX, ringY, ringR, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - tfrac), 0x64b5ff, 4);
+    // Arc turns from accent -> warning red as time runs low.
+    const remaining = 1 - tfrac;
+    const arcCol = remaining < 0.25 ? COLORS.hpFillLow : remaining < 0.5 ? GLOWS.gold : 0x64b5ff;
+    g.lineStyle(6, arcCol, 0.15);
+    this.drawStrokeArc(g, ringX, ringY, ringR, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * remaining, arcCol, 6);
+    this.drawStrokeArc(g, ringX, ringY, ringR, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * remaining, lighten(arcCol, 0.2), 4);
     const secsLeft = Math.max(0, Math.ceil((cur.loopLength - cur.tick) / 60));
     this.label(ringX, ringY, `${secsLeft}`, 12, '#e8ecff', true);
 
@@ -1366,11 +1680,24 @@ export class GameScene extends Phaser.Scene {
       this.drawCooldown(g, this.scale.width - 122, baseY, 24, you.dashCd, stats.dashCd, 0x64b5ff, 'DSH');
       if (you.classId === 'avatar') {
         const cfrac = Math.min(1, you.convergeCharge / CONVERGENCE_CHARGE);
+        const cy = this.scale.height - 76;
+        const ready = cfrac >= 1;
+        g.fillStyle(TINTS.shadow, 0.6);
+        g.fillRoundedRect(59, cy + 1, 142, 13, 6);
         g.fillStyle(COLORS.hpBack, 1);
-        g.fillRoundedRect(60, this.scale.height - 76, 140, 12, 6);
-        g.fillStyle(COLORS.convergence, 1);
-        g.fillRoundedRect(60, this.scale.height - 76, 140 * cfrac, 12, 6);
-        this.label(130, this.scale.height - 70, cfrac >= 1 ? 'CONVERGENCE READY' : 'CONVERGENCE', 10, '#0b0f1a', true);
+        g.fillRoundedRect(60, cy, 140, 12, 6);
+        const fw = 140 * cfrac;
+        g.fillStyle(darken(COLORS.convergence, 0.2), 1);
+        g.fillRoundedRect(60, cy, fw, 12, 6);
+        g.fillStyle(lighten(COLORS.convergence, 0.3), 0.85);
+        g.fillRoundedRect(60, cy, fw, 6, 6);
+        // When ready, pulse a glowing rim to invite the Convergence.
+        if (ready) {
+          const pulse = reducedFlashing() ? 0.5 : 0.5 + 0.5 * Math.sin(this.clock * 0.012);
+          g.lineStyle(2, lighten(COLORS.convergence, 0.4), 0.5 + pulse * 0.5);
+          g.strokeRoundedRect(60, cy, 140, 12, 6);
+        }
+        this.label(130, this.scale.height - 70, ready ? 'CONVERGENCE READY' : 'CONVERGENCE', 10, '#06080f', true);
       }
     }
   }
@@ -1423,8 +1750,34 @@ export class GameScene extends Phaser.Scene {
   /** Recompute the world transform + overlay positions on a live resize. */
   private onResize(): void {
     this.computeTransform();
+    this.backdrop?.resize(this.scale.width, this.scale.height);
     if (this.banner) this.banner.setPosition(this.scale.width / 2, this.scale.height / 2 - 40);
     this.debug?.reposition();
+  }
+
+  /**
+   * Camera shake that honors the "screen shake" accessibility setting
+   * (presentation-only; disabled -> no shake). Keeps the sim untouched.
+   */
+  private shakeCam(durationMs: number, intensity: number): void {
+    if (!screenShakeEnabled()) return;
+    this.vfx.shake(this.cameras.main, durationMs, intensity);
+  }
+
+  /**
+   * Full-screen flash that respects reduced-flashing (dimmed) and screen-shake
+   * is unrelated; purely a Camera effect, never the sim.
+   */
+  private flashCam(durationMs: number, r: number, g: number, b: number): void {
+    const k = reducedFlashing() ? 0.35 : 1;
+    this.vfx.flash(this.cameras.main, durationMs, Math.round(r * k), Math.round(g * k), Math.round(b * k));
+  }
+
+  /** Briefly push the cinematic bloom above base for a crescendo moment. */
+  private pulseBloom(amount: number): void {
+    if (reducedFlashing()) amount *= 0.4;
+    this.bloomPulse = Math.max(this.bloomPulse, amount);
+    this.filters.setBloom(Math.min(1.6, this.baseBloom + this.bloomPulse));
   }
 
   /**
@@ -1488,6 +1841,7 @@ export class GameScene extends Phaser.Scene {
     this.devHook?.dispose();
     this.debug?.destroy();
     this.vfx?.destroy();
+    this.backdrop?.destroy();
     this.audio?.stopMusic();
   }
 

@@ -303,6 +303,43 @@ presentation layer ONLY - `src/sim/**` is byte-identical and all 205 tests
         display-font headings, gradient/glow buttons+panels), none flat; zero
         console errors.
 
+- [x] **FEAT-003 - in-game cinematic overhaul**: the GameScene itself now reads
+      premium, not flat. Render-layer only (`src/game/scenes/game-scene.ts`,
+      `src/game/render/vfx.ts`, `src/ui/save-context.ts` accessors); `src/sim/**`
+      byte-identical; all 205 unit tests + 14 e2e specs + `check:prod` green;
+      initial load unchanged at ~1.65 MB (procedural, no new assets).
+  - [x] Shared animated clockwork/rangoli backdrop (world-palette-tinted)
+        behind the arena; gradient arena floor with a glowing world-accent rim
+        + subtle inner grid for lit depth.
+  - [x] Layered entities: player + echoes + minions get a glow halo, gradient
+        body, bright energy core and class-colored rim instead of flat shapes.
+        The per-class SHAPE (silhouette) + NUMBER badge colour-blind Assist
+        identity is preserved (and strengthened under colour-blind mode).
+  - [x] Boss: gradient body, a glowing energy core that pulses with phase (hotter
+        / faster in phase 2), a rotating clockwork node ring, and brighter
+        bloom-lit telegraphs that still honour the safe/danger colour semantics.
+  - [x] FEAT-001 Filters bloom + vignette attached to the world layer, scaled
+        down when "reduced flashing" is on; a crescendo pulse pushes bloom above
+        base on paradox / Convergence / boss death, then eases back.
+  - [x] Richer pooled VFX within the EXISTING caps (220 particles / 40 damage
+        numbers): additive glowing particles, projectile/beam trails, impact
+        rings, heal/shield auras, shard-grab sparkles, paradox glitch motes, and
+        crisper (shadowed, big-on-heavy-hit) damage numbers derived purely from
+        the rendered boss-HP delta.
+  - [x] Cinematic Convergence + boss death: swelling light core + energy beams,
+        a slow-mo flash, a particle crescendo and a bloom/shatter burst - all
+        presentation-only, honouring reduced-flashing / screen-shake a11y.
+  - [x] HUD polish: boss/convergence bars, slot chips, loop ring and shard
+        counter get gradient fills + soft shadows + glow consistent with the
+        ui-kit; all HUD element names + the `__SQUAD` hook behaviour preserved.
+  - [x] AFTER screenshots (`scripts/showcase-static.mjs` extended to drive
+        combat + the Convergence/victory crescendo via the `__SQUAD` hook):
+        `06-combat` + `06b-convergence-victory` captured + inspected; the fight
+        and win read cinematic, zero console errors.
+  - [x] Determinism / Invariance / all 19 level-solution (live + recorded) /
+        Node-vs-browser hash-parity tests pass byte-identically; `git diff
+        --name-only -- src/sim` is empty.
+
 ## M6 - Stretch
 
 - [ ] Additional bosses/classes/modifiers
